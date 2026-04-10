@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/network/api_client.dart';
+import '../../core/notifications/notification_service.dart';
 import 'settings_repository.dart';
 import '../tasks/tasks_page.dart';
 
@@ -19,6 +20,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _repo = SettingsRepository();
   bool _taskNotification = true;
   bool _reminderNotification = true;
+  bool _notificationPermissionGranted = false;
+  bool _checkingNotificationPermission = false;
   bool _runningAction = false;
   bool _loadingAdvanced = true;
 
@@ -78,7 +81,38 @@ class _SettingsPageState extends State<SettingsPage> {
       _taskNotification = pref.getBool('task_notification') ?? true;
       _reminderNotification = pref.getBool('reminder_notification') ?? true;
     });
+    await _refreshNotificationPermission(silent: true);
     await _loadAdvancedSettings();
+  }
+
+  Future<void> _refreshNotificationPermission({bool silent = false}) async {
+    if (!silent && mounted) {
+      setState(() => _checkingNotificationPermission = true);
+    }
+    try {
+      final granted = await NotificationService.instance.isPermissionGranted();
+      if (!mounted) return;
+      setState(() => _notificationPermissionGranted = granted);
+    } finally {
+      if (!silent && mounted) {
+        setState(() => _checkingNotificationPermission = false);
+      }
+    }
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    if (_checkingNotificationPermission) return;
+    setState(() => _checkingNotificationPermission = true);
+    try {
+      final granted = await NotificationService.instance.requestPermissionIfNeeded();
+      if (!mounted) return;
+      setState(() => _notificationPermissionGranted = granted);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(granted ? '通知权限已开启' : '通知权限未开启，请到系统设置中允许')),
+      );
+    } finally {
+      if (mounted) setState(() => _checkingNotificationPermission = false);
+    }
   }
 
   Future<void> _save() async {
@@ -736,23 +770,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _advancedSettingsBody() {
-    if (_loadingAdvanced) {
-      return const Padding(
-        padding: EdgeInsets.all(16),
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-    return Column(
-      children: [
-        _keywordSection(),
-        _dedupSection(),
-        _tagSection(),
-        _notionSection(),
-      ],
-    );
-  }
-
   Widget _notionSection() {
     Widget resultCard(Map<String, dynamic> item) {
       final title = _pickField(item, ['title', 'subject', 'name', 'page_title'], fallback: '(无标题)');
@@ -924,6 +941,49 @@ class _SettingsPageState extends State<SettingsPage> {
                   value: _reminderNotification,
                   onChanged: (v) => setState(() => _reminderNotification = v),
                 ),
+                ListTile(
+                  leading: Icon(
+                    _notificationPermissionGranted ? Icons.check_circle_outline : Icons.error_outline,
+                    color: _notificationPermissionGranted ? Colors.green : Colors.orange,
+                  ),
+                  title: const Text('系统通知权限'),
+                  subtitle: Text(_notificationPermissionGranted ? '已允许' : '未允许（国产安卓常需手动开启）'),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _checkingNotificationPermission ? null : _requestNotificationPermission,
+                          child: const Text('申请通知权限'),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _checkingNotificationPermission
+                              ? null
+                              : () async {
+                                  final messenger = ScaffoldMessenger.of(context);
+                                  final ok =
+                                      await NotificationService.instance.openSystemNotificationSettings();
+                                  if (!mounted) return;
+                                  if (!ok) {
+                                    messenger.showSnackBar(
+                                      const SnackBar(content: Text('无法打开系统设置')),
+                                    );
+                                    return;
+                                  }
+                                  await _refreshNotificationPermission(silent: true);
+                                },
+                          child: const Text('打开系统设置'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: FilledButton(
