@@ -32,6 +32,10 @@ class ApiClient {
             handler.next(options);
             return;
           }
+          final cookie = await _storage.read(key: _sessionCookieKey);
+          if (cookie != null && cookie.isNotEmpty) {
+            options.headers['Cookie'] = cookie;
+          }
           final csrfToken = await _storage.read(key: _csrfTokenKey);
           if (csrfToken != null && csrfToken.isNotEmpty) {
             options.headers['X-CSRF-Token'] = csrfToken;
@@ -81,6 +85,15 @@ class ApiClient {
       await _storage.delete(key: _sessionCookieKey);
       _dio.options.headers.remove('Cookie');
     }
+  }
+
+  Future<bool> hasLocalSession() async {
+    if (kIsWeb) {
+      final csrf = await _storage.read(key: _csrfTokenKey);
+      return csrf != null && csrf.isNotEmpty;
+    }
+    final cookie = await _storage.read(key: _sessionCookieKey);
+    return cookie != null && cookie.isNotEmpty;
   }
 
   Future<Response<dynamic>> get(String path, {Map<String, dynamic>? query}) {

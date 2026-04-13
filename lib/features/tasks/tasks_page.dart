@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/notifications/notification_service.dart';
 import 'tasks_repository.dart';
 
 class TasksPage extends StatefulWidget {
@@ -14,9 +15,11 @@ class TasksPage extends StatefulWidget {
 class _TasksPageState extends State<TasksPage> {
   final _repo = TasksRepository();
   List<Map<String, dynamic>> _tasks = [];
+  final Map<String, String> _lastStatuses = {};
   Timer? _timer;
   bool _loading = true;
   String? _error;
+  bool _hasSnapshot = false;
 
   @override
   void initState() {
@@ -33,7 +36,9 @@ class _TasksPageState extends State<TasksPage> {
       });
     }
     try {
-      _tasks = await _repo.fetchActiveTasks();
+      final incoming = await _repo.fetchActiveTasks();
+      await _notifyTaskChanges(incoming);
+      _tasks = incoming;
     } catch (e) {
       _error = e.toString();
     }
@@ -76,5 +81,61 @@ class _TasksPageState extends State<TasksPage> {
   void dispose() {
     _timer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _notifyTaskChanges(List<Map<String, dynamic>> incoming) async {
+    final taskNotifyEnabled =
+        await NotificationService.instance.isPushTypeEnabled(NotificationService.pushTypeTask);
+    if (!taskNotifyEnabled) {
+      _lastStatuses
+        ..clear()
+        ..addEntries(
+          incoming.map(
+            (task) => MapEntry(_taskKey(task), task['status']?.toString() ?? 'unknown'),
+          ),
+        );
+      _hasSnapshot = true;
+      return;
+    }
+
+    if (!_hasSnapshot) {
+      _lastStatuses
+        ..clear()
+        ..addEntries(
+          incoming.map(
+            (task) => MapEntry(_taskKey(task), task['status']?.toString() ?? 'unknown'),
+          ),
+        );
+      _hasSnapshot = true;
+      return;
+    }
+
+    for (final task in incoming) {
+      final key = _taskKey(task);
+      final next = task['status']?.toString() ?? 'unknown';
+      final prev = _lastStatuses[key];
+      if (prev != null && prev != next) {
+        final title = task['task_name']?.toString() ?? '后台任务';
+        final msg = task['message']?.toString() ?? '';
+        if (next == 'done' || next == 'success' || next == 'completed') {
+          await NotificationService.instance.showTaskNotification(
+            title: '任务完成：$title',
+            body: msg.isEmpty ? '后台任务已完成' : msg,
+          );
+        } else if (next == 'failed' || next == 'error') {
+          await NotificationService.instance.showTaskNotification(
+            title: '任务失败：$title',
+            body: msg.isEmpty ? '请进入应用查看详情' : msg,
+          );
+        }
+      }
+      _lastStatuses[key] = next;
+    }
+  }
+
+  String _taskKey(Map<String, dynamic> task) {
+    final id = task['id']?.toString();
+    if (id != null && id.isNotEmpty) return id;
+    return '${task['task_name'] ?? 'task'}-${task['created_at'] ?? ''}';
   }
 }

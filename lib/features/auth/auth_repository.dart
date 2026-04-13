@@ -5,6 +5,10 @@ import '../../core/network/api_client.dart';
 class AuthRepository {
   final ApiClient _client = ApiClient.instance;
 
+  Future<bool> hasLocalSession() {
+    return _client.hasLocalSession();
+  }
+
   Future<bool> login({
     required String username,
     required String password,
@@ -27,7 +31,8 @@ class AuthRepository {
       }
 
       final cookieBundle = _extractCookieBundle(res);
-      final csrfToken = body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
+      final csrfToken =
+          body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
       final setCookie = cookieBundle['cookieHeader'];
       await _client.saveSession(csrfToken: csrfToken, setCookie: setCookie);
       return true;
@@ -54,14 +59,16 @@ class AuthRepository {
       final body = res.data;
       if (body is! Map<String, dynamic>) return false;
       final cookieBundle = _extractCookieBundle(res);
-      final csrfToken = body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
+      final csrfToken =
+          body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
       final setCookie = cookieBundle['cookieHeader'];
       await _client.saveSession(csrfToken: csrfToken, setCookie: setCookie);
       return body['success'] == true && body['authenticated'] == true;
     } on DioException {
-      return false;
+      // 网络抖动时，如果本地仍有会话，允许保持登录态并交给后续请求校验。
+      return await _client.hasLocalSession();
     } catch (_) {
-      return false;
+      return await _client.hasLocalSession();
     }
   }
 
@@ -92,7 +99,8 @@ class AuthRepository {
     if (cookieHeader.isEmpty && allPairs.isNotEmpty) {
       cookieHeader.addAll(allPairs);
     }
-    final csrfToken = csrfPair != null ? csrfPair.split('=').skip(1).join('=').trim() : null;
+    final csrfToken =
+        csrfPair != null ? csrfPair.split('=').skip(1).join('=').trim() : null;
     return {
       'cookieHeader': cookieHeader.isEmpty ? null : cookieHeader.join('; '),
       'csrfToken': (csrfToken == null || csrfToken.isEmpty) ? null : csrfToken,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -20,8 +21,29 @@ class _SettingsPageState extends State<SettingsPage> {
   final _repo = SettingsRepository();
   bool _taskNotification = true;
   bool _reminderNotification = true;
+  bool _emailNewNotification = true;
+  bool _emailAnalysisNotification = true;
+  bool _eventNotification = true;
+  bool _systemNotification = true;
   bool _notificationPermissionGranted = false;
   bool _checkingNotificationPermission = false;
+  bool _loadingFcmToken = false;
+  String? _fcmToken;
+  bool _enableServerFcmPush = false;
+  bool _serverFcmReminder = true;
+  bool _serverFcmTask = true;
+  bool _serverFcmSystem = true;
+  bool _serverFcmEmailNew = true;
+  bool _serverFcmEmailAnalysis = true;
+  bool _serverFcmEvent = true;
+  bool _serverFcmWeekend = true;
+  bool _serverFcmQuietHours = false;
+  final _serverFcmStartController = TextEditingController(text: '08:00');
+  final _serverFcmEndController = TextEditingController(text: '22:00');
+  String _configRevision = '';
+  String _tagRevision = '';
+  bool _notificationDirty = false;
+  bool _savingNotificationPrefs = false;
   bool _runningAction = false;
   bool _loadingAdvanced = true;
 
@@ -80,9 +102,16 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {
       _taskNotification = pref.getBool('task_notification') ?? true;
       _reminderNotification = pref.getBool('reminder_notification') ?? true;
+      _emailNewNotification = pref.getBool('email_new_notification') ?? true;
+      _emailAnalysisNotification =
+          pref.getBool('email_analysis_notification') ?? true;
+      _eventNotification = pref.getBool('event_notification') ?? true;
+      _systemNotification = pref.getBool('system_notification') ?? true;
     });
     await _refreshNotificationPermission(silent: true);
+    await _refreshFcmToken(silent: true);
     await _loadAdvancedSettings();
+    if (mounted) setState(() => _notificationDirty = false);
   }
 
   Future<void> _refreshNotificationPermission({bool silent = false}) async {
@@ -104,7 +133,8 @@ class _SettingsPageState extends State<SettingsPage> {
     if (_checkingNotificationPermission) return;
     setState(() => _checkingNotificationPermission = true);
     try {
-      final granted = await NotificationService.instance.requestPermissionIfNeeded();
+      final granted =
+          await NotificationService.instance.requestPermissionIfNeeded();
       if (!mounted) return;
       setState(() => _notificationPermissionGranted = granted);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -115,42 +145,215 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _save() async {
-    final pref = await SharedPreferences.getInstance();
-    await pref.setBool('task_notification', _taskNotification);
-    await pref.setBool('reminder_notification', _reminderNotification);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('设置已保存')),
-    );
+  Future<void> _refreshFcmToken({bool silent = false}) async {
+    if (!silent && mounted) setState(() => _loadingFcmToken = true);
+    try {
+      final token =
+          await NotificationService.instance.getFcmToken(refresh: true);
+      if ((token ?? '').isNotEmpty) {
+        final platform = switch (defaultTargetPlatform) {
+          TargetPlatform.iOS => 'ios',
+          TargetPlatform.android => 'android',
+          _ => 'unknown',
+        };
+        await _repo.uploadFcmToken(token: token!, platform: platform);
+      }
+      if (!mounted) return;
+      setState(() => _fcmToken = token);
+    } finally {
+      if (!silent && mounted) setState(() => _loadingFcmToken = false);
+    }
+  }
+
+  Future<void> _sendFcmTestPush() async {
+    try {
+      await _repo.testFcmPush(
+        title: '测试主动推送',
+        body: '如果你看到这条通知，表示服务端主动推送链路可用',
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('测试推送请求已发送')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('测试推送失败: $e')),
+      );
+    }
+  }
+
+  Map<String, dynamic> _notificationPrefsPayload() {
+    return {
+      'task_notification': _taskNotification,
+      'reminder_notification': _reminderNotification,
+      'email_new_notification': _emailNewNotification,
+      'email_analysis_notification': _emailAnalysisNotification,
+      'event_notification': _eventNotification,
+      'system_notification': _systemNotification,
+      'enable_fcm_notifications': _enableServerFcmPush,
+      'fcm_push_reminder': _serverFcmReminder,
+      'fcm_push_task': _serverFcmTask,
+      'fcm_push_system': _serverFcmSystem,
+      'fcm_push_email_new': _serverFcmEmailNew,
+      'fcm_push_email_analysis': _serverFcmEmailAnalysis,
+      'fcm_push_event': _serverFcmEvent,
+      'fcm_push_on_weekend': _serverFcmWeekend,
+      'fcm_push_quiet_hours_enabled': _serverFcmQuietHours,
+      'fcm_push_start_time': _serverFcmStartController.text.trim(),
+      'fcm_push_end_time': _serverFcmEndController.text.trim(),
+    };
+  }
+
+  Future<void> _saveNotificationPrefs({bool force = false}) async {
+    if (_savingNotificationPrefs) return;
+    setState(() => _savingNotificationPrefs = true);
+    try {
+      final pref = await SharedPreferences.getInstance();
+      await pref.setBool('task_notification', _taskNotification);
+      await pref.setBool('reminder_notification', _reminderNotification);
+      await pref.setBool('email_new_notification', _emailNewNotification);
+      await pref.setBool(
+          'email_analysis_notification', _emailAnalysisNotification);
+      await pref.setBool('event_notification', _eventNotification);
+      await pref.setBool('system_notification', _systemNotification);
+      final saveResult = await _repo.saveNotificationPrefs(
+        notificationPrefs: _notificationPrefsPayload(),
+        baseRevision: _configRevision,
+        force: force,
+      );
+      if (!mounted) return;
+      if (saveResult['conflict'] == true) {
+        final shouldForce = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('检测到多端配置冲突'),
+            content: Text(
+              '${saveResult['error'] ?? '配置已被其他端修改'}\n'
+              '是否覆盖为当前手机上的设置？',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消并刷新'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('强制覆盖'),
+              ),
+            ],
+          ),
+        );
+        if (shouldForce == true) {
+          setState(() => _savingNotificationPrefs = false);
+          await _saveNotificationPrefs(force: true);
+        } else {
+          await _load();
+        }
+        return;
+      }
+      if ((saveResult['revision'] ?? '').toString().isNotEmpty) {
+        setState(() => _configRevision = saveResult['revision'].toString());
+      }
+      setState(() => _notificationDirty = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('通知设置已保存')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _savingNotificationPrefs = false);
+    }
   }
 
   Future<void> _loadAdvancedSettings() async {
     setState(() => _loadingAdvanced = true);
     try {
       final cfg = await _repo.fetchConfig();
-      final kw = (cfg['keywords'] is Map) ? Map<String, dynamic>.from(cfg['keywords'] as Map) : {};
+      final meta = (cfg['_meta'] is Map)
+          ? Map<String, dynamic>.from(cfg['_meta'] as Map)
+          : const {};
+      _configRevision = (meta['revision'] ?? '').toString();
+      final kw = (cfg['keywords'] is Map)
+          ? Map<String, dynamic>.from(cfg['keywords'] as Map)
+          : {};
       _keywords = {
         'important': _stringList(kw['important']),
         'normal': _stringList(kw['normal']),
         'unimportant': _stringList(kw['unimportant']),
       };
 
-      final dedup = (cfg['dedup_beta'] is Map) ? Map<String, dynamic>.from(cfg['dedup_beta'] as Map) : {};
-      final weights = (dedup['weights'] is Map) ? Map<String, dynamic>.from(dedup['weights'] as Map) : {};
+      final dedup = (cfg['dedup_beta'] is Map)
+          ? Map<String, dynamic>.from(cfg['dedup_beta'] as Map)
+          : {};
+      final weights = (dedup['weights'] is Map)
+          ? Map<String, dynamic>.from(dedup['weights'] as Map)
+          : {};
       _dedupEnabled = dedup['enabled'] != false;
-      _dedupWindowController.text = (dedup['time_window_hours'] ?? 72).toString();
-      _dedupThresholdController.text = (dedup['auto_merge_threshold'] ?? 0.85).toString();
+      _dedupWindowController.text =
+          (dedup['time_window_hours'] ?? 72).toString();
+      _dedupThresholdController.text =
+          (dedup['auto_merge_threshold'] ?? 0.85).toString();
       _dedupWeights['title']!.text = (weights['title'] ?? 0.35).toString();
       _dedupWeights['time']!.text = (weights['time'] ?? 0.30).toString();
       _dedupWeights['tags']!.text = (weights['tags'] ?? 0.20).toString();
       _dedupWeights['sender']!.text = (weights['sender'] ?? 0.10).toString();
-      _dedupWeights['location']!.text = (weights['location'] ?? 0.05).toString();
+      _dedupWeights['location']!.text =
+          (weights['location'] ?? 0.05).toString();
+
+      final notification = (cfg['notification'] is Map)
+          ? Map<String, dynamic>.from(cfg['notification'] as Map)
+          : {};
+      final mobilePushPrefs = (notification['mobile_push_prefs'] is Map)
+          ? Map<String, dynamic>.from(notification['mobile_push_prefs'] as Map)
+          : const <String, dynamic>{};
+      _taskNotification = mobilePushPrefs['task_notification'] is bool
+          ? mobilePushPrefs['task_notification'] == true
+          : _taskNotification;
+      _reminderNotification = mobilePushPrefs['reminder_notification'] is bool
+          ? mobilePushPrefs['reminder_notification'] == true
+          : _reminderNotification;
+      _emailNewNotification = mobilePushPrefs['email_new_notification'] is bool
+          ? mobilePushPrefs['email_new_notification'] == true
+          : _emailNewNotification;
+      _emailAnalysisNotification =
+          mobilePushPrefs['email_analysis_notification'] is bool
+              ? mobilePushPrefs['email_analysis_notification'] == true
+              : _emailAnalysisNotification;
+      _eventNotification = mobilePushPrefs['event_notification'] is bool
+          ? mobilePushPrefs['event_notification'] == true
+          : _eventNotification;
+      _systemNotification = mobilePushPrefs['system_notification'] is bool
+          ? mobilePushPrefs['system_notification'] == true
+          : _systemNotification;
+      _enableServerFcmPush = notification['enable_fcm_notifications'] == true;
+      _serverFcmReminder = notification['fcm_push_reminder'] != false;
+      _serverFcmTask = notification['fcm_push_task'] != false;
+      _serverFcmSystem = notification['fcm_push_system'] != false;
+      _serverFcmEmailNew = notification['fcm_push_email_new'] != false;
+      _serverFcmEmailAnalysis =
+          notification['fcm_push_email_analysis'] != false;
+      _serverFcmEvent = notification['fcm_push_event'] != false;
+      _serverFcmWeekend = notification['fcm_push_on_weekend'] != false;
+      _serverFcmQuietHours =
+          notification['fcm_push_quiet_hours_enabled'] == true;
+      _serverFcmStartController.text =
+          (notification['fcm_push_start_time'] ?? '08:00').toString();
+      _serverFcmEndController.text =
+          (notification['fcm_push_end_time'] ?? '22:00').toString();
 
       final tagSettings = await _repo.fetchTagSettings();
+      final tagMeta = (tagSettings['_meta'] is Map)
+          ? Map<String, dynamic>.from(tagSettings['_meta'] as Map)
+          : const <String, dynamic>{};
+      _tagRevision = (tagMeta['revision'] ?? '').toString();
       _subscriptions = _normalizeSubscriptions(tagSettings['subscriptions']);
-      final retention =
-          (tagSettings['history_retention_days'] is num) ? (tagSettings['history_retention_days'] as num).toInt() : 30;
+      final retention = (tagSettings['history_retention_days'] is num)
+          ? (tagSettings['history_retention_days'] as num).toInt()
+          : 30;
       _retentionController.text = retention.toString();
 
       await _loadHistoryCandidates();
@@ -177,20 +380,26 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _loadHistoryCandidates() async {
     final resp = await _repo.fetchHistoryCandidates();
-    final candidates = (resp['candidates'] is Map) ? Map<String, dynamic>.from(resp['candidates'] as Map) : {};
+    final candidates = (resp['candidates'] is Map)
+        ? Map<String, dynamic>.from(resp['candidates'] as Map)
+        : {};
     _historyCandidates = {
       2: _normalizeHistoryList(candidates['other_level2']),
       3: _normalizeHistoryList(candidates['level3']),
       4: _normalizeHistoryList(candidates['level4']),
     };
     if (resp['history_retention_days'] is num) {
-      _retentionController.text = (resp['history_retention_days'] as num).toInt().toString();
+      _retentionController.text =
+          (resp['history_retention_days'] as num).toInt().toString();
     }
   }
 
   List<String> _stringList(dynamic raw) {
     if (raw is! List) return [];
-    return raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+    return raw
+        .map((e) => e.toString().trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
   }
 
   List<Map<String, dynamic>> _normalizeSubscriptions(dynamic raw) {
@@ -219,10 +428,13 @@ class _SettingsPageState extends State<SettingsPage> {
           'subscribed': item['subscribed'] == true,
         });
       } else {
-        out.add({'value': item.toString(), 'manual': false, 'subscribed': false});
+        out.add(
+            {'value': item.toString(), 'manual': false, 'subscribed': false});
       }
     }
-    return out.where((e) => (e['value'] ?? '').toString().trim().isNotEmpty).toList();
+    return out
+        .where((e) => (e['value'] ?? '').toString().trim().isNotEmpty)
+        .toList();
   }
 
   Future<void> _runServerAction({
@@ -239,7 +451,8 @@ class _SettingsPageState extends State<SettingsPage> {
         throw Exception(body['error']?.toString() ?? '执行失败');
       }
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successText)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(successText)));
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -260,7 +473,8 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await action();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successText)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(successText)));
       if (reloadAdvanced) {
         await _loadAdvancedSettings();
       }
@@ -285,13 +499,15 @@ class _SettingsPageState extends State<SettingsPage> {
       _notionSearchResults = await _repo.searchNotion(query: q, limit: 10);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Notion搜索失败: $e')));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Notion搜索失败: $e')));
     } finally {
       if (mounted) setState(() => _loadingNotion = false);
     }
   }
 
-  String _pickField(Map<String, dynamic> item, List<String> keys, {String fallback = '-'}) {
+  String _pickField(Map<String, dynamic> item, List<String> keys,
+      {String fallback = '-'}) {
     for (final k in keys) {
       final v = item[k];
       if (v != null) {
@@ -306,7 +522,8 @@ class _SettingsPageState extends State<SettingsPage> {
     if (text.trim().isEmpty || text == '-') return;
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(successText)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(successText)));
   }
 
   Future<void> _saveKeywords() async {
@@ -319,14 +536,17 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _saveDedupBeta() async {
     final payload = {
       'enabled': _dedupEnabled,
-      'time_window_hours': int.tryParse(_dedupWindowController.text.trim()) ?? 72,
-      'auto_merge_threshold': double.tryParse(_dedupThresholdController.text.trim()) ?? 0.85,
+      'time_window_hours':
+          int.tryParse(_dedupWindowController.text.trim()) ?? 72,
+      'auto_merge_threshold':
+          double.tryParse(_dedupThresholdController.text.trim()) ?? 0.85,
       'weights': {
         'title': double.tryParse(_dedupWeights['title']!.text.trim()) ?? 0.35,
         'time': double.tryParse(_dedupWeights['time']!.text.trim()) ?? 0.30,
         'tags': double.tryParse(_dedupWeights['tags']!.text.trim()) ?? 0.20,
         'sender': double.tryParse(_dedupWeights['sender']!.text.trim()) ?? 0.10,
-        'location': double.tryParse(_dedupWeights['location']!.text.trim()) ?? 0.05,
+        'location':
+            double.tryParse(_dedupWeights['location']!.text.trim()) ?? 0.05,
       },
     };
     await _runRepoAction(
@@ -335,16 +555,57 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Future<void> _saveTagSettings() async {
+  Future<void> _saveTagSettings({bool force = false}) async {
+    if (_runningAction) return;
     final retention = int.tryParse(_retentionController.text.trim()) ?? 30;
-    await _runRepoAction(
-      () => _repo.saveTagSettings(
+    setState(() => _runningAction = true);
+    try {
+      await _repo.saveTagSettings(
         subscriptions: _subscriptions,
         historyRetentionDays: retention,
-      ),
-      successText: '标签配置已保存',
-      reloadAdvanced: true,
-    );
+        baseRevision: _tagRevision,
+        force: force,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('标签配置已保存')),
+      );
+      await _loadAdvancedSettings();
+    } catch (e) {
+      final msg = e.toString();
+      if (!mounted) return;
+      if (msg.contains('CONFLICT:')) {
+        final shouldForce = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('检测到多端标签配置冲突'),
+            content: Text(msg.replaceFirst('Exception: CONFLICT:', '')),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消并刷新'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('强制覆盖'),
+              ),
+            ],
+          ),
+        );
+        if (shouldForce == true) {
+          setState(() => _runningAction = false);
+          await _saveTagSettings(force: true);
+          return;
+        }
+        await _loadAdvancedSettings();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _runningAction = false);
+    }
   }
 
   void _addKeyword(String type) {
@@ -385,7 +646,8 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Future<void> _toggleCandidateSubscription(int level, Map<String, dynamic> item) async {
+  Future<void> _toggleCandidateSubscription(
+      int level, Map<String, dynamic> item) async {
     final value = (item['value'] ?? '').toString().trim();
     if (value.isEmpty) return;
     final subscribed = item['subscribed'] == true;
@@ -435,7 +697,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: TextStyle(fontWeight: FontWeight.w600, color: color)),
+              Text(label,
+                  style: TextStyle(fontWeight: FontWeight.w600, color: color)),
               const SizedBox(height: 8),
               if (list.isEmpty)
                 const Text('暂无关键词', style: TextStyle(color: Colors.grey))
@@ -482,7 +745,8 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('关键词管理', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          child: Text('关键词管理',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -526,7 +790,8 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('去重 Beta 设置', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          child: Text('去重 Beta 设置',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -559,7 +824,8 @@ class _SettingsPageState extends State<SettingsPage> {
                       Expanded(
                         child: TextField(
                           controller: _dedupThresholdController,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
                           decoration: const InputDecoration(
                             labelText: '自动合并阈值',
                             isDense: true,
@@ -570,11 +836,22 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                   const SizedBox(height: 10),
-                  Row(children: [weightInput('title', '标题权重'), const SizedBox(width: 8), weightInput('time', '时间权重')]),
+                  Row(children: [
+                    weightInput('title', '标题权重'),
+                    const SizedBox(width: 8),
+                    weightInput('time', '时间权重')
+                  ]),
                   const SizedBox(height: 8),
-                  Row(children: [weightInput('tags', '标签权重'), const SizedBox(width: 8), weightInput('sender', '发件人权重')]),
+                  Row(children: [
+                    weightInput('tags', '标签权重'),
+                    const SizedBox(width: 8),
+                    weightInput('sender', '发件人权重')
+                  ]),
                   const SizedBox(height: 8),
-                  Row(children: [weightInput('location', '地点权重'), const Spacer()]),
+                  Row(children: [
+                    weightInput('location', '地点权重'),
+                    const Spacer()
+                  ]),
                   const SizedBox(height: 10),
                   Align(
                     alignment: Alignment.centerRight,
@@ -612,7 +889,8 @@ class _SettingsPageState extends State<SettingsPage> {
                     .map(
                       (s) => InputChip(
                         label: Text(s['value'].toString()),
-                        onDeleted: () => _removeSubscription(level, s['value'].toString()),
+                        onDeleted: () =>
+                            _removeSubscription(level, s['value'].toString()),
                       ),
                     )
                     .toList(),
@@ -633,7 +911,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(width: 8),
                 FilledButton.tonal(
-                  onPressed: _runningAction ? null : () => _addSubscription(level),
+                  onPressed:
+                      _runningAction ? null : () => _addSubscription(level),
                   child: const Text('订阅'),
                 ),
               ],
@@ -671,12 +950,18 @@ class _SettingsPageState extends State<SettingsPage> {
                     label: Text(value),
                     backgroundColor: bg,
                     avatar: Icon(
-                      subscribed ? Icons.notifications_active_outlined : Icons.notifications_none_outlined,
+                      subscribed
+                          ? Icons.notifications_active_outlined
+                          : Icons.notifications_none_outlined,
                       size: 16,
                       color: subscribed ? Colors.red : Colors.blueGrey,
                     ),
-                    onPressed: _runningAction ? null : () => _toggleCandidateSubscription(level, item),
-                    onDeleted: _runningAction ? null : () => _deleteHistory(level, item),
+                    onPressed: _runningAction
+                        ? null
+                        : () => _toggleCandidateSubscription(level, item),
+                    onDeleted: _runningAction
+                        ? null
+                        : () => _deleteHistory(level, item),
                   );
                 }).toList(),
               ),
@@ -696,7 +981,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(width: 8),
                 FilledButton.tonal(
-                  onPressed: _runningAction ? null : () => _addManualHistory(level),
+                  onPressed:
+                      _runningAction ? null : () => _addManualHistory(level),
                   child: const Text('添加'),
                 ),
               ],
@@ -713,7 +999,8 @@ class _SettingsPageState extends State<SettingsPage> {
       children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('标签订阅与历史', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          child: Text('标签订阅与历史',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -772,13 +1059,18 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _notionSection() {
     Widget resultCard(Map<String, dynamic> item) {
-      final title = _pickField(item, ['title', 'subject', 'name', 'page_title'], fallback: '(无标题)');
-      final url = _pickField(item, ['url', 'page_url', 'notion_url'], fallback: '-');
-      final date = _pickField(item, ['archived_at', 'archive_date', 'created_time', 'last_edited_time'], fallback: '-');
+      final title = _pickField(item, ['title', 'subject', 'name', 'page_title'],
+          fallback: '(无标题)');
+      final url =
+          _pickField(item, ['url', 'page_url', 'notion_url'], fallback: '-');
+      final date = _pickField(item,
+          ['archived_at', 'archive_date', 'created_time', 'last_edited_time'],
+          fallback: '-');
       return Card(
         child: ListTile(
           title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text('$date\n$url', maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle:
+              Text('$date\n$url', maxLines: 2, overflow: TextOverflow.ellipsis),
           isThreeLine: true,
           trailing: IconButton(
             icon: const Icon(Icons.copy_outlined),
@@ -788,13 +1080,16 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     }
 
-    final showing = _notionSearchController.text.trim().isNotEmpty ? _notionSearchResults : _notionArchived;
+    final showing = _notionSearchController.text.trim().isNotEmpty
+        ? _notionSearchResults
+        : _notionArchived;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Padding(
           padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text('Notion归档', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+          child: Text('Notion归档',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -869,6 +1164,8 @@ class _SettingsPageState extends State<SettingsPage> {
       c.dispose();
     }
     _notionSearchController.dispose();
+    _serverFcmStartController.dispose();
+    _serverFcmEndController.dispose();
     super.dispose();
   }
 
@@ -880,6 +1177,300 @@ class _SettingsPageState extends State<SettingsPage> {
           builder: (_) => Scaffold(
             appBar: AppBar(title: Text(title)),
             body: body,
+          ),
+        ),
+      );
+    }
+
+    Future<void> openNotificationSection() async {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => StatefulBuilder(
+            builder: (ctx, setInnerState) {
+              void onChanged(void Function() updater) {
+                setState(updater);
+                setInnerState(() {});
+                if (!_notificationDirty) {
+                  setState(() => _notificationDirty = true);
+                }
+              }
+
+              return Scaffold(
+                appBar: AppBar(
+                  title: const Text('通知设置'),
+                  actions: [
+                    TextButton.icon(
+                      onPressed:
+                          (_notificationDirty && !_savingNotificationPrefs)
+                              ? _saveNotificationPrefs
+                              : null,
+                      icon: _savingNotificationPrefs
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.save_outlined),
+                      label: const Text('保存'),
+                    ),
+                  ],
+                ),
+                body: ListView(
+                  children: [
+                    SwitchListTile(
+                      title: const Text('任务通知'),
+                      subtitle: const Text('任务失败/完成时推送通知'),
+                      value: _taskNotification,
+                      onChanged: (v) => onChanged(() => _taskNotification = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('日程提醒通知'),
+                      subtitle: const Text('事件提醒时弹出系统通知'),
+                      value: _reminderNotification,
+                      onChanged: (v) =>
+                          onChanged(() => _reminderNotification = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('新邮件通知'),
+                      subtitle: const Text('收到新邮件时推送通知'),
+                      value: _emailNewNotification,
+                      onChanged: (v) =>
+                          onChanged(() => _emailNewNotification = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('邮件分析完成通知'),
+                      subtitle: const Text('AI 分析完成时推送通知'),
+                      value: _emailAnalysisNotification,
+                      onChanged: (v) =>
+                          onChanged(() => _emailAnalysisNotification = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('日程变更通知'),
+                      subtitle: const Text('日程新增/更新/取消时推送通知'),
+                      value: _eventNotification,
+                      onChanged: (v) => onChanged(() => _eventNotification = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('系统公告通知'),
+                      subtitle: const Text('系统消息与公告推送'),
+                      value: _systemNotification,
+                      onChanged: (v) =>
+                          onChanged(() => _systemNotification = v),
+                    ),
+                    const Divider(height: 1),
+                    SwitchListTile(
+                      title: const Text('开启服务端主动推送（FCM）'),
+                      subtitle: const Text('由后端主动下发通知到手机'),
+                      value: _enableServerFcmPush,
+                      onChanged: (v) =>
+                          onChanged(() => _enableServerFcmPush = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：日程提醒'),
+                      value: _serverFcmReminder,
+                      onChanged: (v) => onChanged(() => _serverFcmReminder = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：任务告警'),
+                      value: _serverFcmTask,
+                      onChanged: (v) => onChanged(() => _serverFcmTask = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：系统消息'),
+                      value: _serverFcmSystem,
+                      onChanged: (v) => onChanged(() => _serverFcmSystem = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：新邮件同步'),
+                      value: _serverFcmEmailNew,
+                      onChanged: (v) => onChanged(() => _serverFcmEmailNew = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：邮件分析完成'),
+                      value: _serverFcmEmailAnalysis,
+                      onChanged: (v) =>
+                          onChanged(() => _serverFcmEmailAnalysis = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('主动推送：日程变更'),
+                      value: _serverFcmEvent,
+                      onChanged: (v) => onChanged(() => _serverFcmEvent = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('周末允许主动推送'),
+                      value: _serverFcmWeekend,
+                      onChanged: (v) => onChanged(() => _serverFcmWeekend = v),
+                    ),
+                    SwitchListTile(
+                      title: const Text('启用推送时段限制'),
+                      subtitle: const Text('仅在指定时间范围内发送主动推送'),
+                      value: _serverFcmQuietHours,
+                      onChanged: (v) =>
+                          onChanged(() => _serverFcmQuietHours = v),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _serverFcmStartController,
+                              decoration: const InputDecoration(
+                                labelText: '开始时间',
+                                hintText: '08:00',
+                                isDense: true,
+                              ),
+                              onChanged: (_) => onChanged(() {}),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _serverFcmEndController,
+                              decoration: const InputDecoration(
+                                labelText: '结束时间',
+                                hintText: '22:00',
+                                isDense: true,
+                              ),
+                              onChanged: (_) => onChanged(() {}),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: FilledButton.tonal(
+                        onPressed: (_savingNotificationPrefs ||
+                                (_fcmToken ?? '').isEmpty)
+                            ? null
+                            : _sendFcmTestPush,
+                        child: const Text('发送一次推送测试'),
+                      ),
+                    ),
+                    ListTile(
+                      leading: Icon(
+                        _notificationPermissionGranted
+                            ? Icons.check_circle_outline
+                            : Icons.error_outline,
+                        color: _notificationPermissionGranted
+                            ? Colors.green
+                            : Colors.orange,
+                      ),
+                      title: const Text('系统通知权限'),
+                      subtitle: Text(_notificationPermissionGranted
+                          ? '已允许'
+                          : '未允许（国产安卓常需手动开启）'),
+                    ),
+                    ListTile(
+                      leading: Icon(
+                        (_fcmToken ?? '').isNotEmpty
+                            ? Icons.cloud_done_outlined
+                            : Icons.cloud_off_outlined,
+                        color: (_fcmToken ?? '').isNotEmpty
+                            ? Colors.green
+                            : Colors.orange,
+                      ),
+                      title: const Text('FCM 推送通道'),
+                      subtitle: Text(
+                        (_fcmToken ?? '').isNotEmpty
+                            ? 'FCM Token 已就绪（可用于远程推送）'
+                            : (NotificationService.instance.firebaseReady
+                                ? 'FCM 已初始化，但 Token 暂不可用'
+                                : '未就绪（请确认已放置 google-services.json）'),
+                      ),
+                    ),
+                    if ((_fcmToken ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: SelectableText(
+                          _fcmToken!,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _checkingNotificationPermission
+                                  ? null
+                                  : _requestNotificationPermission,
+                              child: const Text('申请通知权限'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _checkingNotificationPermission
+                                  ? null
+                                  : () async {
+                                      final messenger =
+                                          ScaffoldMessenger.of(context);
+                                      final ok = await NotificationService
+                                          .instance
+                                          .openSystemNotificationSettings();
+                                      if (!mounted) return;
+                                      if (!ok) {
+                                        messenger.showSnackBar(
+                                          const SnackBar(
+                                              content: Text('无法打开系统设置')),
+                                        );
+                                        return;
+                                      }
+                                      await _refreshNotificationPermission(
+                                          silent: true);
+                                    },
+                              child: const Text('打开系统设置'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed:
+                                  _loadingFcmToken ? null : _refreshFcmToken,
+                              child: _loadingFcmToken
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Text('刷新 FCM Token'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: (_fcmToken ?? '').isEmpty
+                                  ? null
+                                  : () =>
+                                      _copyText(_fcmToken!, 'FCM Token 已复制'),
+                              child: const Text('复制 Token'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.fromLTRB(16, 6, 16, 0),
+                      child: Text(
+                        '国产系统建议：到系统设置里同时开启 通知权限、自启动、后台运行白名单，避免被系统拦截。',
+                        style: TextStyle(fontSize: 12, color: Colors.black54),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                ),
+              );
+            },
           ),
         ),
       );
@@ -924,104 +1515,40 @@ class _SettingsPageState extends State<SettingsPage> {
         sectionEntry(
           icon: Icons.notifications_outlined,
           title: '通知设置',
-          subtitle: '任务通知、日程提醒通知',
-          onTap: () => openSection(
-            '通知设置',
-            ListView(
-              children: [
-                SwitchListTile(
-                  title: const Text('任务通知'),
-                  subtitle: const Text('任务失败/完成时推送通知'),
-                  value: _taskNotification,
-                  onChanged: (v) => setState(() => _taskNotification = v),
-                ),
-                SwitchListTile(
-                  title: const Text('日程提醒通知'),
-                  subtitle: const Text('事件提醒时弹出系统通知'),
-                  value: _reminderNotification,
-                  onChanged: (v) => setState(() => _reminderNotification = v),
-                ),
-                ListTile(
-                  leading: Icon(
-                    _notificationPermissionGranted ? Icons.check_circle_outline : Icons.error_outline,
-                    color: _notificationPermissionGranted ? Colors.green : Colors.orange,
-                  ),
-                  title: const Text('系统通知权限'),
-                  subtitle: Text(_notificationPermissionGranted ? '已允许' : '未允许（国产安卓常需手动开启）'),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _checkingNotificationPermission ? null : _requestNotificationPermission,
-                          child: const Text('申请通知权限'),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: _checkingNotificationPermission
-                              ? null
-                              : () async {
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  final ok =
-                                      await NotificationService.instance.openSystemNotificationSettings();
-                                  if (!mounted) return;
-                                  if (!ok) {
-                                    messenger.showSnackBar(
-                                      const SnackBar(content: Text('无法打开系统设置')),
-                                    );
-                                    return;
-                                  }
-                                  await _refreshNotificationPermission(silent: true);
-                                },
-                          child: const Text('打开系统设置'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: FilledButton(
-                    onPressed: _save,
-                    child: const Text('保存设置'),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          subtitle: '精细化选择推送信息类型',
+          onTap: openNotificationSection,
         ),
         sectionEntry(
           icon: Icons.key_outlined,
           title: '关键词管理',
           subtitle: '重要/普通/不重要关键词',
           loading: _loadingAdvanced,
-          onTap: () => openSection('关键词管理', ListView(children: [_keywordSection()])),
+          onTap: () =>
+              openSection('关键词管理', ListView(children: [_keywordSection()])),
         ),
         sectionEntry(
           icon: Icons.merge_type_outlined,
           title: '去重 Beta 设置',
           subtitle: '时间窗口、阈值与权重',
           loading: _loadingAdvanced,
-          onTap: () => openSection('去重 Beta 设置', ListView(children: [_dedupSection()])),
+          onTap: () =>
+              openSection('去重 Beta 设置', ListView(children: [_dedupSection()])),
         ),
         sectionEntry(
           icon: Icons.label_outline,
           title: '标签订阅与历史',
           subtitle: '订阅规则、候选标签、手工标签',
           loading: _loadingAdvanced,
-          onTap: () => openSection('标签订阅与历史', ListView(children: [_tagSection()])),
+          onTap: () =>
+              openSection('标签订阅与历史', ListView(children: [_tagSection()])),
         ),
         sectionEntry(
           icon: Icons.notes_outlined,
           title: 'Notion 归档',
           subtitle: '查看归档与搜索',
           loading: _loadingAdvanced,
-          onTap: () => openSection('Notion 归档', ListView(children: [_notionSection()])),
+          onTap: () =>
+              openSection('Notion 归档', ListView(children: [_notionSection()])),
         ),
         sectionEntry(
           icon: Icons.build_outlined,

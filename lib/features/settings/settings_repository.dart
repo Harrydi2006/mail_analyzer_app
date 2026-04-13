@@ -15,13 +15,65 @@ class SettingsRepository {
     return body;
   }
 
+  Future<Map<String, dynamic>> saveNotificationPrefs({
+    required Map<String, dynamic> notificationPrefs,
+    required String baseRevision,
+    bool force = false,
+  }) async {
+    final res = await _client.post('/api/config', data: {
+      '_base_revision': baseRevision,
+      if (force) '_force': true,
+      'notification': {
+        'mobile_push_prefs': notificationPrefs,
+      },
+    });
+    final body = res.data;
+    if (res.statusCode == 409 && body is Map<String, dynamic>) {
+      return {
+        'success': false,
+        'conflict': true,
+        'error': body['error']?.toString() ?? '配置冲突',
+        'current_revision': body['current_revision']?.toString() ?? '',
+      };
+    }
+    _ensureSuccess(body, '保存通知偏好失败');
+    final result = <String, dynamic>{'success': true};
+    if (body is Map<String, dynamic>) {
+      result['revision'] = body['revision']?.toString() ?? '';
+    }
+    return result;
+  }
+
+  Future<void> uploadFcmToken({
+    required String token,
+    String platform = 'android',
+  }) async {
+    final res = await _client.post('/api/mobile/fcm-token', data: {
+      'token': token,
+      'platform': platform,
+    });
+    _ensureSuccess(res.data, '上传FCM Token失败');
+  }
+
+  Future<void> testFcmPush({
+    required String title,
+    required String body,
+  }) async {
+    final res = await _client.post('/api/notifications/test', data: {
+      'channel': 'fcm',
+      'config': {'title': title, 'body': body},
+    });
+    _ensureSuccess(res.data, 'FCM 测试推送失败');
+  }
+
   Future<void> saveKeywords(Map<String, dynamic> keywords) async {
     final res = await _client.post('/api/config', data: {'keywords': keywords});
     _ensureSuccess(res.data, '保存关键词失败');
   }
 
   Future<void> saveDedupBeta(Map<String, dynamic> dedupBeta) async {
-    final res = await _client.post('/api/config', data: {'dedup_beta': dedupBeta});
+    final res =
+        await _client.post('/api/config', data: {'dedup_beta': dedupBeta});
     _ensureSuccess(res.data, '保存去重配置失败');
   }
 
@@ -35,11 +87,19 @@ class SettingsRepository {
   Future<void> saveTagSettings({
     required List<Map<String, dynamic>> subscriptions,
     required int historyRetentionDays,
+    String baseRevision = '',
+    bool force = false,
   }) async {
     final res = await _client.post('/api/tags', data: {
+      if (baseRevision.trim().isNotEmpty) '_base_revision': baseRevision.trim(),
+      if (force) '_force': true,
       'subscriptions': subscriptions,
       'history_retention_days': historyRetentionDays,
     });
+    if (res.statusCode == 409 && res.data is Map<String, dynamic>) {
+      final body = Map<String, dynamic>.from(res.data as Map);
+      throw Exception('CONFLICT:${body['error'] ?? '标签配置冲突'}');
+    }
     _ensureSuccess(res.data, '保存标签配置失败');
   }
 
@@ -85,7 +145,8 @@ class SettingsRepository {
     required int level,
     required String value,
   }) async {
-    final res = await _client.post('/api/tags/history-candidates/add-manual', data: {
+    final res =
+        await _client.post('/api/tags/history-candidates/add-manual', data: {
       'level': level,
       'value': value,
     });
@@ -97,7 +158,8 @@ class SettingsRepository {
     required String value,
     required bool manual,
   }) async {
-    final res = await _client.post('/api/tags/history-candidates/delete', data: {
+    final res =
+        await _client.post('/api/tags/history-candidates/delete', data: {
       'level': level,
       'value': value,
       'manual': manual,
@@ -105,25 +167,34 @@ class SettingsRepository {
     _ensureSuccess(res.data, '删除历史候选失败');
   }
 
-  Future<List<Map<String, dynamic>>> fetchNotionArchived({int limit = 30}) async {
-    final res = await _client.get('/api/notion/archived', query: {'limit': limit});
+  Future<List<Map<String, dynamic>>> fetchNotionArchived(
+      {int limit = 30}) async {
+    final res =
+        await _client.get('/api/notion/archived', query: {'limit': limit});
     final body = _asMap(res.data);
     _ensureSuccess(body, '加载Notion归档失败');
     final list = body['emails'];
     if (list is! List) return [];
-    return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    return list
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   Future<List<Map<String, dynamic>>> searchNotion({
     required String query,
     int limit = 10,
   }) async {
-    final res = await _client.get('/api/notion/search', query: {'q': query, 'limit': limit});
+    final res = await _client
+        .get('/api/notion/search', query: {'q': query, 'limit': limit});
     final body = _asMap(res.data);
     _ensureSuccess(body, '搜索Notion失败');
     final list = body['results'];
     if (list is! List) return [];
-    return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    return list
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
   }
 
   Map<String, dynamic> _asMap(dynamic data) {
@@ -134,6 +205,9 @@ class SettingsRepository {
   void _ensureSuccess(dynamic data, String fallback) {
     if (data is Map<String, dynamic> && data['success'] == false) {
       throw Exception(data['error']?.toString() ?? fallback);
+    }
+    if (data is! Map<String, dynamic>) {
+      throw Exception(fallback);
     }
   }
 }

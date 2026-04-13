@@ -14,6 +14,8 @@ class EmailsRepository {
     String? importance,
     String? status,
     String? search,
+    String? startDate,
+    String? endDate,
   }) async {
     final query = <String, dynamic>{
       'page': page,
@@ -27,6 +29,12 @@ class EmailsRepository {
     }
     if ((search ?? '').trim().isNotEmpty) {
       query['search'] = search!.trim();
+    }
+    if ((startDate ?? '').trim().isNotEmpty) {
+      query['start_date'] = startDate!.trim();
+    }
+    if ((endDate ?? '').trim().isNotEmpty) {
+      query['end_date'] = endDate!.trim();
     }
     final res = await _client.get('/api/emails', query: query);
     final body = res.data;
@@ -43,13 +51,18 @@ class EmailsRepository {
     }
     final list = body['emails'];
     final items = (list is List)
-        ? list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList()
+        ? list
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList()
         : <Map<String, dynamic>>[];
     return {
       'items': items,
-      'total': body['total'] is num ? (body['total'] as num).toInt() : items.length,
+      'total':
+          body['total'] is num ? (body['total'] as num).toInt() : items.length,
       'page': body['page'] is num ? (body['page'] as num).toInt() : page,
-      'per_page': body['per_page'] is num ? (body['per_page'] as num).toInt() : perPage,
+      'per_page':
+          body['per_page'] is num ? (body['per_page'] as num).toInt() : perPage,
     };
   }
 
@@ -77,7 +90,8 @@ class EmailsRepository {
   }
 
   Future<void> retryAnalysis(int emailId) async {
-    final res = await _client.post('/api/email/$emailId/retry-analysis', data: {'debug': true});
+    final res = await _client
+        .post('/api/email/$emailId/retry-analysis', data: {'debug': true});
     final body = res.data;
     if (body is Map<String, dynamic> && body['success'] == false) {
       throw Exception(body['error']?.toString() ?? '重试分析失败');
@@ -92,8 +106,55 @@ class EmailsRepository {
     }
   }
 
+  Future<List<Map<String, dynamic>>> fetchTagSubscriptions() async {
+    final res = await _client.get('/api/tags');
+    final body = res.data;
+    if (body is! Map<String, dynamic>) return const [];
+    if (body['success'] == false) {
+      throw Exception(body['error']?.toString() ?? '加载标签订阅失败');
+    }
+    final subs = body['subscriptions'];
+    if (subs is! List) return const [];
+    return subs
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  Future<void> subscribeTag({
+    required int level,
+    required String value,
+  }) async {
+    final res = await _client.post('/api/tags/subscribe', data: {
+      'level': level,
+      'value': value,
+      'apply_now': true,
+    });
+    final body = res.data;
+    if (body is Map<String, dynamic> && body['success'] == false) {
+      throw Exception(body['error']?.toString() ?? '订阅标签失败');
+    }
+  }
+
+  Future<void> unsubscribeTag({
+    required int level,
+    required String value,
+  }) async {
+    final res = await _client.post('/api/tags/unsubscribe', data: {
+      'level': level,
+      'value': value,
+      'apply_now': true,
+    });
+    final body = res.data;
+    if (body is Map<String, dynamic> && body['success'] == false) {
+      throw Exception(body['error']?.toString() ?? '取消订阅失败');
+    }
+  }
+
   String buildAttachmentUrl(dynamic attachment) {
-    final m = (attachment is Map) ? Map<String, dynamic>.from(attachment) : const <String, dynamic>{};
+    final m = (attachment is Map)
+        ? Map<String, dynamic>.from(attachment)
+        : const <String, dynamic>{};
     final unique = (m['unique_filename'] ?? '').toString().trim();
     final id = m['id'];
     if (unique.isNotEmpty) {
