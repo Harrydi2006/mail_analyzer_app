@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:getui_flutter/getui_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -34,9 +35,12 @@ class NotificationService {
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
   bool _firebaseReady = false;
+  bool _getuiReady = false;
   String? _fcmToken;
+  String? _getuiClientId;
   Map<String, dynamic>? _lastOpenedMessageData;
   int _notificationId = 1000;
+  final GetuiFlutter _getui = GetuiFlutter();
 
   Future<void> init() async {
     if (_initialized) return;
@@ -55,11 +59,14 @@ class NotificationService {
     await _createChannels();
     await requestPermissionIfNeeded();
     await _initFirebaseMessaging();
+    await _initGetuiPush();
     _initialized = true;
   }
 
   bool get firebaseReady => _firebaseReady;
+  bool get getuiReady => _getuiReady;
   String? get cachedFcmToken => _fcmToken;
+  String? get cachedGetuiClientId => _getuiClientId;
   Map<String, dynamic>? get lastOpenedMessageData => _lastOpenedMessageData;
 
   Future<void> _initFirebaseMessaging() async {
@@ -110,6 +117,47 @@ class NotificationService {
     } catch (_) {
       // Missing Firebase config (google-services.json/GoogleService-Info.plist) or init errors.
       _firebaseReady = false;
+    }
+  }
+
+  Future<void> _initGetuiPush() async {
+    if (kIsWeb) return;
+    if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS) {
+      return;
+    }
+    try {
+      _getui.addEventHandler(
+        onReceiveClientId: (String cid) async {
+          _getuiClientId = cid;
+        },
+        onReceiveMessageData: (Map event) async {},
+        onNotificationMessageArrived: (Map event) async {},
+        onNotificationMessageClicked: (Map event) async {
+          _lastOpenedMessageData = Map<String, dynamic>.from(event);
+        },
+        onTransmitUserMessageReceive: (Map event) async {},
+        onRegisterDeviceToken: (String token) async {},
+        onReceivePayload: (Map event) async {},
+        onReceiveNotificationResponse: (Map event) async {},
+        onAppLinkPayload: (String payload) async {},
+        onPushModeResult: (Map event) async {},
+        onSetTagResult: (Map event) async {},
+        onAliasResult: (Map event) async {},
+        onQueryTagResult: (Map event) async {},
+        onWillPresentNotification: (Map event) async {},
+        onOpenSettingsForNotification: (Map event) async {},
+        onGrantAuthorization: (String result) async {},
+        onLiveActivityResult: (Map event) async {},
+      );
+      await GetuiFlutter.initGetuiSdk;
+      final cid = (await GetuiFlutter.getClientId).toString().trim();
+      if (cid.isNotEmpty && cid != 'null') {
+        _getuiClientId = cid;
+      }
+      _getuiReady = true;
+    } catch (_) {
+      _getuiReady = false;
     }
   }
 
@@ -177,6 +225,24 @@ class NotificationService {
       return _fcmToken;
     }
     return _fcmToken ?? await FirebaseMessaging.instance.getToken();
+  }
+
+  Future<String?> getGetuiClientId({bool refresh = false}) async {
+    if (kIsWeb) return null;
+    await init();
+    if (!_getuiReady) return null;
+    if (!refresh && (_getuiClientId ?? '').isNotEmpty) {
+      return _getuiClientId;
+    }
+    try {
+      final cid = (await GetuiFlutter.getClientId).toString().trim();
+      if (cid.isNotEmpty && cid != 'null') {
+        _getuiClientId = cid;
+      }
+      return _getuiClientId;
+    } catch (_) {
+      return _getuiClientId;
+    }
   }
 
   Future<bool> openSystemNotificationSettings() async {

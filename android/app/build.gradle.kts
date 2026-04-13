@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -7,6 +9,21 @@ plugins {
 
 if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
+}
+
+val localSecretProps = Properties().apply {
+    val f = rootProject.file("gradle.local.properties")
+    if (f.exists()) {
+        f.inputStream().use { load(it) }
+    }
+}
+
+fun secretProp(name: String): String {
+    val fromProject = project.findProperty(name)?.toString()?.trim()
+    if (!fromProject.isNullOrEmpty()) return fromProject
+    val fromLocal = localSecretProps.getProperty(name)?.trim()
+    if (!fromLocal.isNullOrEmpty()) return fromLocal
+    return ""
 }
 
 android {
@@ -33,6 +50,9 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        manifestPlaceholders["PUSH_APPID"] = secretProp("GETUI_APP_ID")
+        manifestPlaceholders["PUSH_APPKEY"] = secretProp("GETUI_APP_KEY")
+        manifestPlaceholders["PUSH_APPSECRET"] = secretProp("GETUI_APP_SECRET")
     }
 
     buildTypes {
@@ -56,4 +76,6 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
+    implementation("com.getui:gtsdk:3.3.13.0")
+    implementation("com.getui:gtc:3.1.10.0")
 }

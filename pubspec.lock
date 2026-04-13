@@ -272,6 +272,14 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
+  getui_flutter:
+    dependency: "direct main"
+    description:
+      name: getui_flutter
+      sha256: "29057b0198e820a4a13f5bed9610f8865716ca0b14d0f51e4d43db4bbb7ad83f"
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "1.0.0"
   glob:
     dependency: transitive
     description:

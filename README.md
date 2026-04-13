@@ -62,6 +62,24 @@ Flutter 移动端客户端（Android / iOS，对接当前 Flask API）。
 
 > 未放置 `GoogleService-Info.plist` 时，iOS 端仍可运行，但 FCM 不会生效。
 
+## Getui 配置（Android）
+
+1. 推荐在**本机私有文件** `android/gradle.local.properties` 添加（不要入库）：
+   - `GETUI_APP_ID=你的个推AppID`
+   - `GETUI_APP_KEY=你的个推AppKey`
+   - `GETUI_APP_SECRET=你的个推AppSecret`
+2. 仓库内提供了公开模板：`android/gradle.local.properties.example`（可上传 GitHub）。
+3. 把模板复制为 `android/gradle.local.properties` 后填入你的真实参数。
+4. `android/gradle.local.properties` 已在 `.gitignore` 中，默认不会上传。
+5. 重新执行：
+   - `flutter clean`
+   - `flutter pub get`
+   - `flutter run` 或 `flutter build apk`
+6. 在 App “设置 -> 通知设置”里点击“刷新 Getui CID”，看到 CID 即表示客户端通道已就绪。
+7. 在 App 里开启“服务端主动推送（Getui）”，并选择“Getui优先”或“FCM优先”。
+
+> 如果未配置 `GETUI_APP_*`，应用仍可运行，但 Getui 通道不会生效。
+
 ## iOS 测试说明
 
 - iOS 编译和真机调试必须在 macOS 上进行（Windows 不能直接编译 iOS）。

@@ -8,6 +8,7 @@ build/
 android/.kotlin/
 android/app/google-services.json
 ios/Runner/GoogleService-Info.plist
+android/gradle.local.properties
 
 # IDE
 .idea/

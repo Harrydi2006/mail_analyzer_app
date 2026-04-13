@@ -4,6 +4,15 @@
         android:label="mail_analyzer_app"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="PUSH_APPID"
+            android:value="${PUSH_APPID}" />
+        <meta-data
+            android:name="PUSH_APPKEY"
+            android:value="${PUSH_APPKEY}" />
+        <meta-data
+            android:name="PUSH_APPSECRET"
+            android:value="${PUSH_APPSECRET}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

@@ -101,15 +101,35 @@ class SettingsRepository {
     _ensureSuccess(res.data, '上传FCM Token失败');
   }
 
+  Future<void> uploadGetuiClientId({
+    required String clientId,
+    String platform = 'android',
+  }) async {
+    final res = await _client.post('/api/mobile/push-token', data: {
+      'provider': 'getui',
+      'token': clientId,
+      'platform': platform,
+    });
+    _ensureSuccess(res.data, '上传Getui ClientID失败');
+  }
+
   Future<void> testFcmPush({
     required String title,
     required String body,
   }) async {
+    await testPush(channel: 'fcm', title: title, body: body);
+  }
+
+  Future<void> testPush({
+    required String channel,
+    required String title,
+    required String body,
+  }) async {
     final res = await _client.post('/api/notifications/test', data: {
-      'channel': 'fcm',
+      'channel': channel,
       'config': {'title': title, 'body': body},
     });
-    _ensureSuccess(res.data, 'FCM 测试推送失败');
+    _ensureSuccess(res.data, '测试推送失败');
   }
 
   Future<void> saveKeywords(Map<String, dynamic> keywords) async {

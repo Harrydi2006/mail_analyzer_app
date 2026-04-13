@@ -28,8 +28,12 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _notificationPermissionGranted = false;
   bool _checkingNotificationPermission = false;
   bool _loadingFcmToken = false;
+  bool _loadingGetuiClientId = false;
   String? _fcmToken;
+  String? _getuiClientId;
   bool _enableServerFcmPush = false;
+  bool _enableServerGetuiPush = false;
+  String _mobilePushPriority = 'fcm_first';
   bool _serverFcmReminder = true;
   bool _serverFcmTask = true;
   bool _serverFcmSystem = true;
@@ -132,6 +136,7 @@ class _SettingsPageState extends State<SettingsPage> {
     });
     await _refreshNotificationPermission(silent: true);
     await _refreshFcmToken(silent: true);
+    await _refreshGetuiClientId(silent: true);
     await _loadAdvancedSettings();
     if (mounted) setState(() => _notificationDirty = false);
   }
@@ -187,15 +192,37 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _refreshGetuiClientId({bool silent = false}) async {
+    if (!silent && mounted) setState(() => _loadingGetuiClientId = true);
+    try {
+      final clientId =
+          await NotificationService.instance.getGetuiClientId(refresh: true);
+      if ((clientId ?? '').isNotEmpty) {
+        final platform = switch (defaultTargetPlatform) {
+          TargetPlatform.iOS => 'ios',
+          TargetPlatform.android => 'android',
+          _ => 'unknown',
+        };
+        await _repo.uploadGetuiClientId(clientId: clientId!, platform: platform);
+      }
+      if (!mounted) return;
+      setState(() => _getuiClientId = clientId);
+    } finally {
+      if (!silent && mounted) setState(() => _loadingGetuiClientId = false);
+    }
+  }
+
   Future<void> _sendFcmTestPush() async {
     try {
-      await _repo.testFcmPush(
+      final channel = _mobilePushPriority == 'getui_first' ? 'getui' : 'fcm';
+      await _repo.testPush(
+        channel: channel,
         title: '测试主动推送',
         body: '如果你看到这条通知，表示服务端主动推送链路可用',
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('测试推送请求已发送')),
+        SnackBar(content: Text('测试推送请求已发送（$channel）')),
       );
     } catch (e) {
       if (!mounted) return;
@@ -214,6 +241,8 @@ class _SettingsPageState extends State<SettingsPage> {
       'event_notification': _eventNotification,
       'system_notification': _systemNotification,
       'enable_fcm_notifications': _enableServerFcmPush,
+      'enable_getui_notifications': _enableServerGetuiPush,
+      'mobile_push_priority': _mobilePushPriority,
       'fcm_push_reminder': _serverFcmReminder,
       'fcm_push_task': _serverFcmTask,
       'fcm_push_system': _serverFcmSystem,
@@ -352,6 +381,13 @@ class _SettingsPageState extends State<SettingsPage> {
           ? mobilePushPrefs['system_notification'] == true
           : _systemNotification;
       _enableServerFcmPush = notification['enable_fcm_notifications'] == true;
+      _enableServerGetuiPush = notification['enable_getui_notifications'] == true;
+      final priority = (notification['mobile_push_priority'] ?? 'fcm_first')
+          .toString()
+          .trim()
+          .toLowerCase();
+      _mobilePushPriority =
+          (priority == 'getui_first') ? 'getui_first' : 'fcm_first';
       _serverFcmReminder = notification['fcm_push_reminder'] != false;
       _serverFcmTask = notification['fcm_push_task'] != false;
       _serverFcmSystem = notification['fcm_push_system'] != false;
@@ -366,6 +402,8 @@ class _SettingsPageState extends State<SettingsPage> {
           (notification['fcm_push_start_time'] ?? '08:00').toString();
       _serverFcmEndController.text =
           (notification['fcm_push_end_time'] ?? '22:00').toString();
+      _getuiClientId =
+          (notification['mobile_getui_client_id'] ?? '').toString();
 
       final email = (cfg['email'] is Map)
           ? Map<String, dynamic>.from(cfg['email'] as Map)
@@ -1747,6 +1785,33 @@ class _SettingsPageState extends State<SettingsPage> {
                           onChanged(() => _enableServerFcmPush = v),
                     ),
                     SwitchListTile(
+                      title: const Text('开启服务端主动推送（Getui）'),
+                      subtitle: const Text('国内网络可优先走 Getui 通道'),
+                      value: _enableServerGetuiPush,
+                      onChanged: (v) =>
+                          onChanged(() => _enableServerGetuiPush = v),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                      child: SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment<String>(
+                            value: 'fcm_first',
+                            label: Text('FCM优先'),
+                          ),
+                          ButtonSegment<String>(
+                            value: 'getui_first',
+                            label: Text('Getui优先'),
+                          ),
+                        ],
+                        selected: {_mobilePushPriority},
+                        onSelectionChanged: (set) {
+                          if (set.isEmpty) return;
+                          onChanged(() => _mobilePushPriority = set.first);
+                        },
+                      ),
+                    ),
+                    SwitchListTile(
                       title: const Text('主动推送：日程提醒'),
                       value: _serverFcmReminder,
                       onChanged: (v) => onChanged(() => _serverFcmReminder = v),
@@ -1823,7 +1888,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                       child: FilledButton.tonal(
                         onPressed: (_savingNotificationPrefs ||
-                                (_fcmToken ?? '').isEmpty)
+                                ((_mobilePushPriority == 'getui_first'
+                                        ? (_getuiClientId ?? '').isEmpty
+                                        : (_fcmToken ?? '').isEmpty)))
                             ? null
                             : _sendFcmTestPush,
                         child: const Text('发送一次推送测试'),
@@ -1861,11 +1928,37 @@ class _SettingsPageState extends State<SettingsPage> {
                                 : '未就绪（请确认已放置 google-services.json）'),
                       ),
                     ),
+                    ListTile(
+                      leading: Icon(
+                        (_getuiClientId ?? '').isNotEmpty
+                            ? Icons.cloud_done_outlined
+                            : Icons.cloud_off_outlined,
+                        color: (_getuiClientId ?? '').isNotEmpty
+                            ? Colors.green
+                            : Colors.orange,
+                      ),
+                      title: const Text('Getui 推送通道'),
+                      subtitle: Text(
+                        (_getuiClientId ?? '').isNotEmpty
+                            ? 'Getui ClientID 已就绪（可用于远程推送）'
+                            : (NotificationService.instance.getuiReady
+                                ? 'Getui 已初始化，但 ClientID 暂不可用'
+                                : '未就绪（请确认 Android Getui 配置已完成）'),
+                      ),
+                    ),
                     if ((_fcmToken ?? '').isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: SelectableText(
                           _fcmToken!,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    if ((_getuiClientId ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: SelectableText(
+                          _getuiClientId!,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
@@ -1935,6 +2028,38 @@ class _SettingsPageState extends State<SettingsPage> {
                                   : () =>
                                       _copyText(_fcmToken!, 'FCM Token 已复制'),
                               child: const Text('复制 Token'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _loadingGetuiClientId
+                                  ? null
+                                  : _refreshGetuiClientId,
+                              child: _loadingGetuiClientId
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Text('刷新 Getui CID'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: (_getuiClientId ?? '').isEmpty
+                                  ? null
+                                  : () => _copyText(
+                                      _getuiClientId!, 'Getui ClientID 已复制'),
+                              child: const Text('复制 Getui CID'),
                             ),
                           ),
                         ],

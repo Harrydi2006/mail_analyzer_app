@@ -128,7 +128,8 @@ class EmailsRepository {
     final res = await _client.post('/api/tags/subscribe', data: {
       'level': level,
       'value': value,
-      'apply_now': true,
+      // 邮件列表里的单次订阅仅更新规则，避免阻塞式全量重算导致交互卡顿
+      'apply_now': false,
     });
     final body = res.data;
     if (body is Map<String, dynamic> && body['success'] == false) {
@@ -143,7 +144,8 @@ class EmailsRepository {
     final res = await _client.post('/api/tags/unsubscribe', data: {
       'level': level,
       'value': value,
-      'apply_now': true,
+      // 取消订阅同样走快速路径，重算可在“重应用订阅规则”时手动触发
+      'apply_now': false,
     });
     final body = res.data;
     if (body is Map<String, dynamic> && body['success'] == false) {
