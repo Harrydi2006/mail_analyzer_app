@@ -43,6 +43,11 @@ class _SettingsPageState extends State<SettingsPage> {
   String _configRevision = '';
   String _tagRevision = '';
   bool _notificationDirty = false;
+  bool _tagDirty = false;
+  bool _keywordDirty = false;
+  bool _dedupDirty = false;
+  bool _emailDirty = false;
+  bool _aiDirty = false;
   bool _savingNotificationPrefs = false;
   bool _runningAction = false;
   bool _loadingAdvanced = true;
@@ -68,6 +73,23 @@ class _SettingsPageState extends State<SettingsPage> {
     'sender': TextEditingController(text: '0.10'),
     'location': TextEditingController(text: '0.05'),
   };
+  final _emailAddressController = TextEditingController();
+  final _emailPasswordController = TextEditingController();
+  final _emailImapServerController = TextEditingController();
+  final _emailImapPortController = TextEditingController(text: '993');
+  final _emailFetchIntervalController = TextEditingController(text: '1800');
+  final _emailMaxPerFetchController = TextEditingController(text: '50');
+  bool _emailUseSsl = true;
+  bool _emailAutoFetch = true;
+  final _aiProviderController = TextEditingController(text: 'openai');
+  final _aiApiKeyController = TextEditingController();
+  final _aiModelController = TextEditingController(text: 'gpt-3.5-turbo');
+  final _aiBaseUrlController = TextEditingController();
+  final _aiMaxTokensController = TextEditingController(text: '2000');
+  final _aiTemperatureController = TextEditingController(text: '0.7');
+  bool _aiEnableAnalysis = true;
+  bool _aiEnableEventExtraction = true;
+  bool _aiEnableSummary = true;
 
   List<Map<String, dynamic>> _subscriptions = [];
   final _retentionController = TextEditingController(text: '30');
@@ -345,6 +367,34 @@ class _SettingsPageState extends State<SettingsPage> {
       _serverFcmEndController.text =
           (notification['fcm_push_end_time'] ?? '22:00').toString();
 
+      final email = (cfg['email'] is Map)
+          ? Map<String, dynamic>.from(cfg['email'] as Map)
+          : const <String, dynamic>{};
+      _emailAddressController.text =
+          (email['username'] ?? email['email'] ?? '').toString();
+      _emailPasswordController.text = (email['password'] ?? '').toString();
+      _emailImapServerController.text = (email['imap_server'] ?? '').toString();
+      _emailImapPortController.text = (email['imap_port'] ?? 993).toString();
+      _emailFetchIntervalController.text =
+          (email['fetch_interval'] ?? 1800).toString();
+      _emailMaxPerFetchController.text =
+          (email['max_emails_per_fetch'] ?? 50).toString();
+      _emailUseSsl = email['use_ssl'] != false;
+      _emailAutoFetch = email['auto_fetch'] != false;
+
+      final ai = (cfg['ai'] is Map)
+          ? Map<String, dynamic>.from(cfg['ai'] as Map)
+          : const <String, dynamic>{};
+      _aiProviderController.text = (ai['provider'] ?? 'openai').toString();
+      _aiApiKeyController.text = (ai['api_key'] ?? '').toString();
+      _aiModelController.text = (ai['model'] ?? 'gpt-3.5-turbo').toString();
+      _aiBaseUrlController.text = (ai['base_url'] ?? '').toString();
+      _aiMaxTokensController.text = (ai['max_tokens'] ?? 2000).toString();
+      _aiTemperatureController.text = (ai['temperature'] ?? 0.7).toString();
+      _aiEnableAnalysis = ai['enable_analysis'] != false;
+      _aiEnableEventExtraction = ai['enable_event_extraction'] != false;
+      _aiEnableSummary = ai['enable_summary'] != false;
+
       final tagSettings = await _repo.fetchTagSettings();
       final tagMeta = (tagSettings['_meta'] is Map)
           ? Map<String, dynamic>.from(tagSettings['_meta'] as Map)
@@ -358,6 +408,11 @@ class _SettingsPageState extends State<SettingsPage> {
 
       await _loadHistoryCandidates();
       await _loadNotionData();
+      _tagDirty = false;
+      _keywordDirty = false;
+      _dedupDirty = false;
+      _emailDirty = false;
+      _aiDirty = false;
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -526,10 +581,80 @@ class _SettingsPageState extends State<SettingsPage> {
         .showSnackBar(SnackBar(content: Text(successText)));
   }
 
+  Future<void> _saveConfigSectionWithConflict({
+    required String section,
+    required Map<String, dynamic> payload,
+    required String successText,
+    required String conflictTitle,
+    required VoidCallback clearDirty,
+    bool force = false,
+  }) async {
+    if (_runningAction) return;
+    setState(() => _runningAction = true);
+    try {
+      final result = await _repo.saveConfigSection(
+        section: section,
+        payload: payload,
+        baseRevision: _configRevision,
+        force: force,
+      );
+      if (!mounted) return;
+      if (result['success'] == true) {
+        _configRevision = (result['revision'] ?? _configRevision).toString();
+        setState(clearDirty);
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(successText)));
+        return;
+      }
+      if (result['conflict'] == true) {
+        final shouldForce = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(conflictTitle),
+            content: Text((result['error'] ?? '检测到配置冲突').toString()),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('取消并刷新'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('强制覆盖'),
+              ),
+            ],
+          ),
+        );
+        if (shouldForce == true) {
+          setState(() => _runningAction = false);
+          await _saveConfigSectionWithConflict(
+            section: section,
+            payload: payload,
+            successText: successText,
+            conflictTitle: conflictTitle,
+            clearDirty: clearDirty,
+            force: true,
+          );
+          return;
+        }
+        await _loadAdvancedSettings();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('保存失败: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _runningAction = false);
+    }
+  }
+
   Future<void> _saveKeywords() async {
-    await _runRepoAction(
-      () => _repo.saveKeywords(_keywords),
+    await _saveConfigSectionWithConflict(
+      section: 'keywords',
+      payload: _keywords,
       successText: '关键词已保存',
+      conflictTitle: '检测到多端关键词配置冲突',
+      clearDirty: () => _keywordDirty = false,
     );
   }
 
@@ -549,9 +674,56 @@ class _SettingsPageState extends State<SettingsPage> {
             double.tryParse(_dedupWeights['location']!.text.trim()) ?? 0.05,
       },
     };
-    await _runRepoAction(
-      () => _repo.saveDedupBeta(payload),
+    await _saveConfigSectionWithConflict(
+      section: 'dedup_beta',
+      payload: payload,
       successText: '去重 Beta 设置已保存',
+      conflictTitle: '检测到多端去重配置冲突',
+      clearDirty: () => _dedupDirty = false,
+    );
+  }
+
+  Future<void> _saveEmailSettings() async {
+    final payload = <String, dynamic>{
+      'username': _emailAddressController.text.trim(),
+      'password': _emailPasswordController.text.trim(),
+      'imap_server': _emailImapServerController.text.trim(),
+      'imap_port': int.tryParse(_emailImapPortController.text.trim()) ?? 993,
+      'use_ssl': _emailUseSsl,
+      'auto_fetch': _emailAutoFetch,
+      'fetch_interval':
+          int.tryParse(_emailFetchIntervalController.text.trim()) ?? 1800,
+      'max_emails_per_fetch':
+          int.tryParse(_emailMaxPerFetchController.text.trim()) ?? 50,
+    };
+    await _saveConfigSectionWithConflict(
+      section: 'email',
+      payload: payload,
+      successText: '邮箱设置已保存',
+      conflictTitle: '检测到多端邮箱配置冲突',
+      clearDirty: () => _emailDirty = false,
+    );
+  }
+
+  Future<void> _saveAiSettings() async {
+    final payload = <String, dynamic>{
+      'provider': _aiProviderController.text.trim(),
+      'api_key': _aiApiKeyController.text.trim(),
+      'model': _aiModelController.text.trim(),
+      'base_url': _aiBaseUrlController.text.trim(),
+      'max_tokens': int.tryParse(_aiMaxTokensController.text.trim()) ?? 2000,
+      'temperature':
+          double.tryParse(_aiTemperatureController.text.trim()) ?? 0.7,
+      'enable_analysis': _aiEnableAnalysis,
+      'enable_event_extraction': _aiEnableEventExtraction,
+      'enable_summary': _aiEnableSummary,
+    };
+    await _saveConfigSectionWithConflict(
+      section: 'ai',
+      payload: payload,
+      successText: 'AI 设置已保存',
+      conflictTitle: '检测到多端 AI 配置冲突',
+      clearDirty: () => _aiDirty = false,
     );
   }
 
@@ -614,36 +786,64 @@ class _SettingsPageState extends State<SettingsPage> {
     if (value.isEmpty) return;
     final list = _keywords[type] ?? [];
     if (!list.contains(value)) {
-      setState(() => list.add(value));
+      setState(() {
+        list.add(value);
+        _keywordDirty = true;
+      });
     }
     input.clear();
   }
 
   void _removeKeyword(String type, String value) {
-    setState(() => _keywords[type]?.remove(value));
+    setState(() {
+      _keywords[type]?.remove(value);
+      _keywordDirty = true;
+    });
   }
 
   List<Map<String, dynamic>> _subsByLevel(int level) =>
       _subscriptions.where((s) => (s['level'] as int?) == level).toList();
 
+  void _setCandidateSubscribed(int level, String value, bool subscribed) {
+    final items = _historyCandidates[level] ?? const <Map<String, dynamic>>[];
+    for (final item in items) {
+      if ((item['value'] ?? '').toString().trim() == value.trim()) {
+        item['subscribed'] = subscribed;
+      }
+    }
+  }
+
   Future<void> _addSubscription(int level) async {
     final ctrl = _subInputs[level]!;
     final value = ctrl.text.trim();
     if (value.isEmpty) return;
-    await _runRepoAction(
-      () => _repo.subscribeTag(level: level, value: value, applyNow: true),
-      successText: '订阅成功',
-      reloadAdvanced: true,
+    final exists = _subscriptions.any(
+      (s) =>
+          (s['level'] as int?) == level &&
+          (s['value'] ?? '').toString().trim() == value,
     );
+    if (exists) {
+      ctrl.clear();
+      return;
+    }
+    setState(() {
+      _subscriptions.add({'level': level, 'value': value});
+      _setCandidateSubscribed(level, value, true);
+      _tagDirty = true;
+    });
     ctrl.clear();
   }
 
   Future<void> _removeSubscription(int level, String value) async {
-    await _runRepoAction(
-      () => _repo.unsubscribeTag(level: level, value: value, applyNow: true),
-      successText: '已取消订阅',
-      reloadAdvanced: true,
-    );
+    setState(() {
+      _subscriptions.removeWhere(
+        (s) =>
+            (s['level'] as int?) == level &&
+            (s['value'] ?? '').toString().trim() == value.trim(),
+      );
+      _setCandidateSubscribed(level, value, false);
+      _tagDirty = true;
+    });
   }
 
   Future<void> _toggleCandidateSubscription(
@@ -655,11 +855,17 @@ class _SettingsPageState extends State<SettingsPage> {
       await _removeSubscription(level, value);
       return;
     }
-    await _runRepoAction(
-      () => _repo.subscribeTag(level: level, value: value, applyNow: true),
-      successText: '订阅成功',
-      reloadAdvanced: true,
+    final exists = _subscriptions.any(
+      (s) =>
+          (s['level'] as int?) == level &&
+          (s['value'] ?? '').toString().trim() == value,
     );
+    if (exists) return;
+    setState(() {
+      _subscriptions.add({'level': level, 'value': value});
+      _setCandidateSubscribed(level, value, true);
+      _tagDirty = true;
+    });
   }
 
   Future<void> _addManualHistory(int level) async {
@@ -688,7 +894,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _keywordSection() {
+  Widget _keywordSection({bool showInlineSave = true}) {
     Widget block(String type, String label, Color color) {
       final list = _keywords[type] ?? [];
       return Card(
@@ -756,13 +962,16 @@ class _SettingsPageState extends State<SettingsPage> {
               block('normal', '普通关键词', Colors.blue),
               block('unimportant', '不重要关键词', Colors.grey),
               const SizedBox(height: 4),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.tonal(
-                  onPressed: _runningAction ? null : _saveKeywords,
-                  child: const Text('保存关键词'),
+              if (showInlineSave)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.tonal(
+                    onPressed: (_runningAction || !_keywordDirty)
+                        ? null
+                        : _saveKeywords,
+                    child: const Text('保存关键词'),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -770,7 +979,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _dedupSection() {
+  Widget _dedupSection({bool showInlineSave = true}) {
     Widget weightInput(String key, String label) {
       return Expanded(
         child: TextField(
@@ -781,6 +990,7 @@ class _SettingsPageState extends State<SettingsPage> {
             isDense: true,
             border: const OutlineInputBorder(),
           ),
+          onChanged: (_) => setState(() => _dedupDirty = true),
         ),
       );
     }
@@ -804,7 +1014,10 @@ class _SettingsPageState extends State<SettingsPage> {
                     contentPadding: EdgeInsets.zero,
                     title: const Text('启用智能去重'),
                     value: _dedupEnabled,
-                    onChanged: (v) => setState(() => _dedupEnabled = v),
+                    onChanged: (v) => setState(() {
+                      _dedupEnabled = v;
+                      _dedupDirty = true;
+                    }),
                   ),
                   const SizedBox(height: 8),
                   Row(
@@ -818,6 +1031,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
+                          onChanged: (_) => setState(() => _dedupDirty = true),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -831,6 +1045,7 @@ class _SettingsPageState extends State<SettingsPage> {
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
+                          onChanged: (_) => setState(() => _dedupDirty = true),
                         ),
                       ),
                     ],
@@ -853,13 +1068,231 @@ class _SettingsPageState extends State<SettingsPage> {
                     const Spacer()
                   ]),
                   const SizedBox(height: 10),
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: FilledButton.tonal(
-                      onPressed: _runningAction ? null : _saveDedupBeta,
-                      child: const Text('保存去重设置'),
+                  if (showInlineSave)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.tonal(
+                        onPressed: (_runningAction || !_dedupDirty)
+                            ? null
+                            : _saveDedupBeta,
+                        child: const Text('保存去重设置'),
+                      ),
                     ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _emailSection({bool showInlineSave = true}) {
+    Widget textField(
+      TextEditingController controller,
+      String label, {
+      TextInputType? keyboardType,
+      bool obscureText = false,
+    }) {
+      return TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        obscureText: obscureText,
+        decoration: InputDecoration(
+          labelText: label,
+          isDense: true,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) => setState(() => _emailDirty = true),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Text('邮箱设置',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  textField(_emailAddressController, '邮箱账号'),
+                  const SizedBox(height: 8),
+                  textField(_emailPasswordController, '邮箱密码/授权码',
+                      obscureText: true),
+                  const SizedBox(height: 8),
+                  textField(_emailImapServerController, 'IMAP 服务器'),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: textField(
+                          _emailImapPortController,
+                          'IMAP 端口',
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: textField(
+                          _emailFetchIntervalController,
+                          '抓取间隔(秒)',
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 8),
+                  textField(
+                    _emailMaxPerFetchController,
+                    '每次抓取数量',
+                    keyboardType: TextInputType.number,
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用 SSL'),
+                    value: _emailUseSsl,
+                    onChanged: (v) => setState(() {
+                      _emailUseSsl = v;
+                      _emailDirty = true;
+                    }),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('自动抓取邮件'),
+                    value: _emailAutoFetch,
+                    onChanged: (v) => setState(() {
+                      _emailAutoFetch = v;
+                      _emailDirty = true;
+                    }),
+                  ),
+                  if (showInlineSave)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.tonal(
+                        onPressed: (_runningAction || !_emailDirty)
+                            ? null
+                            : _saveEmailSettings,
+                        child: const Text('保存邮箱设置'),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _aiSection({bool showInlineSave = true}) {
+    Widget textField(
+      TextEditingController controller,
+      String label, {
+      TextInputType? keyboardType,
+      bool obscureText = false,
+    }) {
+      return TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        obscureText: obscureText,
+        decoration: InputDecoration(
+          labelText: label,
+          isDense: true,
+          border: const OutlineInputBorder(),
+        ),
+        onChanged: (_) => setState(() => _aiDirty = true),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Text('AI 设置',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  textField(_aiProviderController, '提供商'),
+                  const SizedBox(height: 8),
+                  textField(_aiApiKeyController, 'API Key', obscureText: true),
+                  const SizedBox(height: 8),
+                  textField(_aiModelController, '模型'),
+                  const SizedBox(height: 8),
+                  textField(_aiBaseUrlController, 'Base URL (可选)'),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: textField(
+                          _aiMaxTokensController,
+                          'Max Tokens',
+                          keyboardType: TextInputType.number,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: textField(
+                          _aiTemperatureController,
+                          'Temperature',
+                          keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用邮件分析'),
+                    value: _aiEnableAnalysis,
+                    onChanged: (v) => setState(() {
+                      _aiEnableAnalysis = v;
+                      _aiDirty = true;
+                    }),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用事件抽取'),
+                    value: _aiEnableEventExtraction,
+                    onChanged: (v) => setState(() {
+                      _aiEnableEventExtraction = v;
+                      _aiDirty = true;
+                    }),
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用摘要生成'),
+                    value: _aiEnableSummary,
+                    onChanged: (v) => setState(() {
+                      _aiEnableSummary = v;
+                      _aiDirty = true;
+                    }),
+                  ),
+                  if (showInlineSave)
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton.tonal(
+                        onPressed: (_runningAction || !_aiDirty)
+                            ? null
+                            : _saveAiSettings,
+                        child: const Text('保存 AI 设置'),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -993,7 +1426,7 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _tagSection() {
+  Widget _tagSection({bool showInlineSave = true}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1020,13 +1453,17 @@ class _SettingsPageState extends State<SettingsPage> {
                             isDense: true,
                             border: OutlineInputBorder(),
                           ),
+                          onChanged: (_) => setState(() => _tagDirty = true),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      FilledButton.tonal(
-                        onPressed: _runningAction ? null : _saveTagSettings,
-                        child: const Text('保存'),
-                      ),
+                      if (showInlineSave)
+                        FilledButton.tonal(
+                          onPressed: (_runningAction || !_tagDirty)
+                              ? null
+                              : _saveTagSettings,
+                          child: const Text('保存'),
+                        ),
                     ],
                   ),
                 ),
@@ -1166,6 +1603,18 @@ class _SettingsPageState extends State<SettingsPage> {
     _notionSearchController.dispose();
     _serverFcmStartController.dispose();
     _serverFcmEndController.dispose();
+    _emailAddressController.dispose();
+    _emailPasswordController.dispose();
+    _emailImapServerController.dispose();
+    _emailImapPortController.dispose();
+    _emailFetchIntervalController.dispose();
+    _emailMaxPerFetchController.dispose();
+    _aiProviderController.dispose();
+    _aiApiKeyController.dispose();
+    _aiModelController.dispose();
+    _aiBaseUrlController.dispose();
+    _aiMaxTokensController.dispose();
+    _aiTemperatureController.dispose();
     super.dispose();
   }
 
@@ -1176,6 +1625,38 @@ class _SettingsPageState extends State<SettingsPage> {
         MaterialPageRoute(
           builder: (_) => Scaffold(
             appBar: AppBar(title: Text(title)),
+            body: body,
+          ),
+        ),
+      );
+    }
+
+    Future<void> openEditableSection({
+      required String title,
+      required Widget body,
+      required bool dirty,
+      required Future<void> Function() onSave,
+      bool saving = false,
+    }) async {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+              title: Text(title),
+              actions: [
+                TextButton.icon(
+                  onPressed: (!saving && dirty) ? onSave : null,
+                  icon: saving
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined),
+                  label: const Text('保存'),
+                ),
+              ],
+            ),
             body: body,
           ),
         ),
@@ -1476,6 +1957,73 @@ class _SettingsPageState extends State<SettingsPage> {
       );
     }
 
+    Future<void> openTagSection() async {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+              title: const Text('标签订阅与历史'),
+              actions: [
+                TextButton.icon(
+                  onPressed:
+                      (_runningAction || !_tagDirty) ? null : _saveTagSettings,
+                  icon: _runningAction
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined),
+                  label: const Text('保存'),
+                ),
+              ],
+            ),
+            body: ListView(children: [_tagSection(showInlineSave: false)]),
+          ),
+        ),
+      );
+    }
+
+    Future<void> openKeywordSection() async {
+      await openEditableSection(
+        title: '关键词管理',
+        body: ListView(children: [_keywordSection(showInlineSave: false)]),
+        dirty: _keywordDirty,
+        onSave: _saveKeywords,
+        saving: _runningAction,
+      );
+    }
+
+    Future<void> openDedupSection() async {
+      await openEditableSection(
+        title: '去重 Beta 设置',
+        body: ListView(children: [_dedupSection(showInlineSave: false)]),
+        dirty: _dedupDirty,
+        onSave: _saveDedupBeta,
+        saving: _runningAction,
+      );
+    }
+
+    Future<void> openEmailSection() async {
+      await openEditableSection(
+        title: '邮箱设置',
+        body: ListView(children: [_emailSection(showInlineSave: false)]),
+        dirty: _emailDirty,
+        onSave: _saveEmailSettings,
+        saving: _runningAction,
+      );
+    }
+
+    Future<void> openAiSection() async {
+      await openEditableSection(
+        title: 'AI 设置',
+        body: ListView(children: [_aiSection(showInlineSave: false)]),
+        dirty: _aiDirty,
+        onSave: _saveAiSettings,
+        saving: _runningAction,
+      );
+    }
+
     Widget sectionEntry({
       required IconData icon,
       required String title,
@@ -1519,28 +2067,39 @@ class _SettingsPageState extends State<SettingsPage> {
           onTap: openNotificationSection,
         ),
         sectionEntry(
+          icon: Icons.mail_outline,
+          title: '邮箱设置',
+          subtitle: '邮箱账号、IMAP、抓取策略',
+          loading: _loadingAdvanced,
+          onTap: openEmailSection,
+        ),
+        sectionEntry(
+          icon: Icons.psychology_outlined,
+          title: 'AI 设置',
+          subtitle: '模型、密钥、分析开关',
+          loading: _loadingAdvanced,
+          onTap: openAiSection,
+        ),
+        sectionEntry(
           icon: Icons.key_outlined,
           title: '关键词管理',
           subtitle: '重要/普通/不重要关键词',
           loading: _loadingAdvanced,
-          onTap: () =>
-              openSection('关键词管理', ListView(children: [_keywordSection()])),
+          onTap: openKeywordSection,
         ),
         sectionEntry(
           icon: Icons.merge_type_outlined,
           title: '去重 Beta 设置',
           subtitle: '时间窗口、阈值与权重',
           loading: _loadingAdvanced,
-          onTap: () =>
-              openSection('去重 Beta 设置', ListView(children: [_dedupSection()])),
+          onTap: openDedupSection,
         ),
         sectionEntry(
           icon: Icons.label_outline,
           title: '标签订阅与历史',
           subtitle: '订阅规则、候选标签、手工标签',
           loading: _loadingAdvanced,
-          onTap: () =>
-              openSection('标签订阅与历史', ListView(children: [_tagSection()])),
+          onTap: openTagSection,
         ),
         sectionEntry(
           icon: Icons.notes_outlined,

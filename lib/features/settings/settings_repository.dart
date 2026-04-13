@@ -44,6 +44,34 @@ class SettingsRepository {
     return result;
   }
 
+  Future<Map<String, dynamic>> saveConfigSection({
+    required String section,
+    required Map<String, dynamic> payload,
+    required String baseRevision,
+    bool force = false,
+  }) async {
+    final res = await _client.post('/api/config', data: {
+      '_base_revision': baseRevision,
+      if (force) '_force': true,
+      section: payload,
+    });
+    final body = res.data;
+    if (res.statusCode == 409 && body is Map<String, dynamic>) {
+      return {
+        'success': false,
+        'conflict': true,
+        'error': body['error']?.toString() ?? '配置冲突',
+        'current_revision': body['current_revision']?.toString() ?? '',
+      };
+    }
+    _ensureSuccess(body, '保存配置失败');
+    final result = <String, dynamic>{'success': true};
+    if (body is Map<String, dynamic>) {
+      result['revision'] = body['revision']?.toString() ?? '';
+    }
+    return result;
+  }
+
   Future<void> uploadFcmToken({
     required String token,
     String platform = 'android',
