@@ -20,11 +20,29 @@ class SettingsRepository {
     required String baseRevision,
     bool force = false,
   }) async {
+    const mobilePrefKeys = <String>{
+      'task_notification',
+      'reminder_notification',
+      'email_new_notification',
+      'email_analysis_notification',
+      'event_notification',
+      'system_notification',
+    };
+    final mobilePushPrefs = <String, dynamic>{};
+    final serverNotification = <String, dynamic>{};
+    notificationPrefs.forEach((key, value) {
+      if (mobilePrefKeys.contains(key)) {
+        mobilePushPrefs[key] = value;
+      } else {
+        serverNotification[key] = value;
+      }
+    });
     final res = await _client.post('/api/config', data: {
       '_base_revision': baseRevision,
       if (force) '_force': true,
       'notification': {
-        'mobile_push_prefs': notificationPrefs,
+        ...serverNotification,
+        'mobile_push_prefs': mobilePushPrefs,
       },
     });
     final body = res.data;

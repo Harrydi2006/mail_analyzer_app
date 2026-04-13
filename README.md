@@ -36,7 +36,7 @@ Flutter 移动端客户端（Android / iOS，对接当前 Flask API）。
 
 ## FCM 配置（Android）
 
-1. 在 Firebase 控制台创建 Android 应用（包名默认是 `com.example.mail_analyzer_app`）。
+1. 在 Firebase 控制台创建 Android 应用（包名默认是 `com.harrydi.mail_analyzer_app`）。
 2. 下载配置文件并放到：
    - `android/app/google-services.json`
 3. 重新执行：
