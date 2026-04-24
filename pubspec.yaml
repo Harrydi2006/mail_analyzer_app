@@ -1,7 +1,9 @@
 name: mail_analyzer_app
 description: Android client for Mail Analyzer system.
 publish_to: "none"
-version: 0.1.0+1
+# 发布流程：1) 更新本行 version 2) git tag vX.Y.Z 推送 3) GitHub Actions 打 release 并附 APK/AAB
+# version 格式 name+build: name 对用户可见，build 为 Android versionCode
+version: 0.2.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

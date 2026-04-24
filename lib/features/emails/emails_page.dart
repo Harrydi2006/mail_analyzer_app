@@ -165,7 +165,7 @@ class _EmailsPageState extends State<EmailsPage> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _streamStatusTimer ??= Timer.periodic(
-      const Duration(seconds: 3),
+      const Duration(seconds: 10),
       (_) => _refreshStreamStatus(silent: true),
     );
     unawaited(_refreshStreamStatus(silent: true));
@@ -487,31 +487,33 @@ class _EmailsPageState extends State<EmailsPage> {
 
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          title: Row(
+            children: [
+              const Text(
+                '流式处理邮件',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+              ),
+              const SizedBox(width: 8),
+              Chip(
+                label: Text(statusText),
+                visualDensity: VisualDensity.compact,
+                backgroundColor: statusColor.withOpacity(0.12),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: '刷新状态',
+                onPressed: () => _refreshStreamStatus(),
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
+          ),
           children: [
-            Row(
-              children: [
-                const Text(
-                  '流式处理邮件',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(width: 8),
-                Chip(
-                  label: Text(statusText),
-                  visualDensity: VisualDensity.compact,
-                  backgroundColor: statusColor.withOpacity(0.12),
-                ),
-                const Spacer(),
-                IconButton(
-                  tooltip: '刷新状态',
-                  onPressed: () => _refreshStreamStatus(),
-                  icon: const Icon(Icons.refresh),
-                ),
-              ],
-            ),
             Row(
               children: [
                 Expanded(
@@ -544,24 +546,56 @@ class _EmailsPageState extends State<EmailsPage> {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Container(
-              width: double.infinity,
-              constraints: const BoxConstraints(minHeight: 80, maxHeight: 180),
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade100,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: _streamLogs.isEmpty
-                  ? const Text('暂无日志')
-                  : ListView(
-                      children: _streamLogs.reversed
-                          .map((l) =>
-                              Text(l, style: const TextStyle(fontSize: 12)))
-                          .toList(),
+            Theme(
+              data: Theme.of(context)
+                  .copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                initiallyExpanded: false,
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: EdgeInsets.zero,
+                title: Row(
+                  children: [
+                    const Text(
+                      '处理日志',
+                      style:
+                          TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                     ),
+                    const SizedBox(width: 6),
+                    if (_streamLogs.isNotEmpty)
+                      Text(
+                        '(${_streamLogs.length} 条)',
+                        style: const TextStyle(
+                            fontSize: 12, color: Colors.grey),
+                      ),
+                  ],
+                ),
+                children: [
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    constraints:
+                        const BoxConstraints(minHeight: 60, maxHeight: 200),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade300),
+                    ),
+                    child: _streamLogs.isEmpty
+                        ? const Text('暂无日志', style: TextStyle(color: Colors.grey))
+                        : ListView(
+                            children: _streamLogs.reversed
+                                .map(
+                                  (l) => Text(
+                                    l,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                )
+                                .toList(),
+                          ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

@@ -23,6 +23,8 @@ class _EventsPageState extends State<EventsPage> {
   String? _subscribeKey;
   int _subscribeDays = 365;
   String _subscribeImportance = '';
+  bool _icalUrlVisible = false;
+  bool _subscribeUrlVisible = false;
 
   @override
   void initState() {
@@ -246,13 +248,17 @@ class _EventsPageState extends State<EventsPage> {
   Widget _calendarExportPanel() {
     return Card(
       margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          title: const Text(
+            '日历导出与订阅',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+          ),
           children: [
-            const Text('日历导出与订阅', style: TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 8),
             Row(
               children: [
                 Expanded(
@@ -282,34 +288,53 @@ class _EventsPageState extends State<EventsPage> {
                     ),
                     items: const [
                       DropdownMenuItem(value: '', child: Text('全部')),
-                      DropdownMenuItem(value: 'important', child: Text('仅重要')),
+                      DropdownMenuItem(
+                          value: 'important', child: Text('仅重要')),
                       DropdownMenuItem(value: 'normal', child: Text('仅普通')),
-                      DropdownMenuItem(value: 'unimportant', child: Text('仅不重要')),
+                      DropdownMenuItem(
+                          value: 'unimportant', child: Text('仅不重要')),
                     ],
-                    onChanged: (v) => setState(() => _subscribeImportance = v ?? ''),
+                    onChanged: (v) =>
+                        setState(() => _subscribeImportance = v ?? ''),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 10),
-            const Text('iCal 导出链接', style: TextStyle(fontWeight: FontWeight.w500)),
-            const SizedBox(height: 4),
-            SelectableText(
-              _icalUrl,
-              style: const TextStyle(fontSize: 12),
+            Row(
+              children: [
+                const Text('iCal 导出链接',
+                    style: TextStyle(fontWeight: FontWeight.w500)),
+                const Spacer(),
+                IconButton(
+                  icon: Icon(
+                    _icalUrlVisible
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                  tooltip: _icalUrlVisible ? '隐藏链接' : '显示链接',
+                  onPressed: () =>
+                      setState(() => _icalUrlVisible = !_icalUrlVisible),
+                ),
+                FilledButton.tonal(
+                  onPressed: () => _copyText(_icalUrl, 'iCal 链接已复制'),
+                  child: const Text('复制'),
+                ),
+              ],
             ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.tonal(
-                onPressed: () => _copyText(_icalUrl, 'iCal 链接已复制'),
-                child: const Text('复制导出链接'),
+            if (_icalUrlVisible) ...[
+              const SizedBox(height: 4),
+              SelectableText(
+                _icalUrl,
+                style: const TextStyle(fontSize: 12),
               ),
-            ),
+            ],
             const SizedBox(height: 10),
             Row(
               children: [
-                const Text('订阅链接', style: TextStyle(fontWeight: FontWeight.w500)),
-                const SizedBox(width: 8),
+                const Text('订阅链接',
+                    style: TextStyle(fontWeight: FontWeight.w500)),
+                const Spacer(),
                 if (_loadingSubscribe)
                   const SizedBox(
                     width: 14,
@@ -321,22 +346,31 @@ class _EventsPageState extends State<EventsPage> {
                     onPressed: _loadSubscribeKey,
                     child: const Text('刷新key'),
                   ),
+                IconButton(
+                  icon: Icon(
+                    _subscribeUrlVisible
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
+                  ),
+                  tooltip: _subscribeUrlVisible ? '隐藏链接' : '显示链接',
+                  onPressed: () => setState(
+                      () => _subscribeUrlVisible = !_subscribeUrlVisible),
+                ),
+                FilledButton.tonal(
+                  onPressed: _subscribeUrl.isEmpty
+                      ? null
+                      : () => _copyText(_subscribeUrl, '订阅链接已复制'),
+                  child: const Text('复制'),
+                ),
               ],
             ),
-            const SizedBox(height: 4),
-            SelectableText(
-              _subscribeUrl.isEmpty ? '订阅key未就绪' : _subscribeUrl,
-              style: const TextStyle(fontSize: 12),
-            ),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton.tonal(
-                onPressed: _subscribeUrl.isEmpty
-                    ? null
-                    : () => _copyText(_subscribeUrl, '订阅链接已复制'),
-                child: const Text('复制订阅链接'),
+            if (_subscribeUrlVisible) ...[
+              const SizedBox(height: 4),
+              SelectableText(
+                _subscribeUrl.isEmpty ? '订阅key未就绪' : _subscribeUrl,
+                style: const TextStyle(fontSize: 12),
               ),
-            ),
+            ],
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerRight,
