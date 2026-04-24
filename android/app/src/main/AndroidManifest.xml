@@ -1,18 +1,17 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="mail_analyzer_app"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        tools:replace="android:label">
         <meta-data
-            android:name="PUSH_APPID"
-            android:value="${PUSH_APPID}" />
+            android:name="JPUSH_APPKEY"
+            android:value="${JPUSH_APPKEY}" />
         <meta-data
-            android:name="PUSH_APPKEY"
-            android:value="${PUSH_APPKEY}" />
-        <meta-data
-            android:name="PUSH_APPSECRET"
-            android:value="${PUSH_APPSECRET}" />
+            android:name="JPUSH_CHANNEL"
+            android:value="${JPUSH_CHANNEL}" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

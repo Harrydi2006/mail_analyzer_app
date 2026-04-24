@@ -1,11 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/network/api_client.dart';
 import '../../core/notifications/notification_service.dart';
+import '../events/events_repository.dart';
+import '../emails/emails_repository.dart';
 import 'settings_repository.dart';
 import '../tasks/tasks_page.dart';
 
@@ -19,6 +24,8 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _client = ApiClient.instance;
   final _repo = SettingsRepository();
+  final _eventsRepo = EventsRepository();
+  final _emailsRepo = EmailsRepository();
   bool _taskNotification = true;
   bool _reminderNotification = true;
   bool _emailNewNotification = true;
@@ -28,11 +35,11 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _notificationPermissionGranted = false;
   bool _checkingNotificationPermission = false;
   bool _loadingFcmToken = false;
-  bool _loadingGetuiClientId = false;
+  bool _loadingJPushRegistrationId = false;
   String? _fcmToken;
-  String? _getuiClientId;
+  String? _jpushRegistrationId;
   bool _enableServerFcmPush = false;
-  bool _enableServerGetuiPush = false;
+  bool _enableServerJPushPush = false;
   String _mobilePushPriority = 'fcm_first';
   bool _serverFcmReminder = true;
   bool _serverFcmTask = true;
@@ -54,7 +61,17 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _aiDirty = false;
   bool _savingNotificationPrefs = false;
   bool _runningAction = false;
-  bool _loadingAdvanced = true;
+  bool _loadingSubscribe = false;
+  String? _subscribeKey;
+  int _subscribeDays = 365;
+  String _subscribeImportance = '';
+  bool _streamRunning = false;
+  bool _streamConnecting = false;
+  int _streamMaxCount = 0;
+  final _streamMaxCountController = TextEditingController(text: '0');
+  Timer? _streamStatusTimer;
+  CancelToken? _streamCancelToken;
+  List<String> _streamLogs = [];
 
   Map<String, List<String>> _keywords = {
     'important': [],
@@ -120,7 +137,12 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    _streamStatusTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _refreshStreamStatus(silent: true),
+    );
     _load();
+    unawaited(_refreshStreamStatus(silent: true));
   }
 
   Future<void> _load() async {
@@ -136,7 +158,8 @@ class _SettingsPageState extends State<SettingsPage> {
     });
     await _refreshNotificationPermission(silent: true);
     await _refreshFcmToken(silent: true);
-    await _refreshGetuiClientId(silent: true);
+    await _refreshJPushRegistrationId(silent: true);
+    await _loadSubscribeKey(silent: true);
     await _loadAdvancedSettings();
     if (mounted) setState(() => _notificationDirty = false);
   }
@@ -192,29 +215,34 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  Future<void> _refreshGetuiClientId({bool silent = false}) async {
-    if (!silent && mounted) setState(() => _loadingGetuiClientId = true);
+  Future<void> _refreshJPushRegistrationId({bool silent = false}) async {
+    if (!silent && mounted) setState(() => _loadingJPushRegistrationId = true);
     try {
-      final clientId =
-          await NotificationService.instance.getGetuiClientId(refresh: true);
-      if ((clientId ?? '').isNotEmpty) {
+      final registrationId = await NotificationService.instance
+          .getJPushRegistrationId(refresh: true);
+      if ((registrationId ?? '').isNotEmpty) {
         final platform = switch (defaultTargetPlatform) {
           TargetPlatform.iOS => 'ios',
           TargetPlatform.android => 'android',
           _ => 'unknown',
         };
-        await _repo.uploadGetuiClientId(clientId: clientId!, platform: platform);
+        await _repo.uploadJPushRegistrationId(
+          registrationId: registrationId!,
+          platform: platform,
+        );
       }
       if (!mounted) return;
-      setState(() => _getuiClientId = clientId);
+      setState(() => _jpushRegistrationId = registrationId);
     } finally {
-      if (!silent && mounted) setState(() => _loadingGetuiClientId = false);
+      if (!silent && mounted) {
+        setState(() => _loadingJPushRegistrationId = false);
+      }
     }
   }
 
   Future<void> _sendFcmTestPush() async {
     try {
-      final channel = _mobilePushPriority == 'getui_first' ? 'getui' : 'fcm';
+      final channel = _mobilePushPriority == 'jpush_first' ? 'jpush' : 'fcm';
       await _repo.testPush(
         channel: channel,
         title: '测试主动推送',
@@ -241,7 +269,7 @@ class _SettingsPageState extends State<SettingsPage> {
       'event_notification': _eventNotification,
       'system_notification': _systemNotification,
       'enable_fcm_notifications': _enableServerFcmPush,
-      'enable_getui_notifications': _enableServerGetuiPush,
+      'enable_jpush_notifications': _enableServerJPushPush,
       'mobile_push_priority': _mobilePushPriority,
       'fcm_push_reminder': _serverFcmReminder,
       'fcm_push_task': _serverFcmTask,
@@ -321,7 +349,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _loadAdvancedSettings() async {
-    setState(() => _loadingAdvanced = true);
     try {
       final cfg = await _repo.fetchConfig();
       final meta = (cfg['_meta'] is Map)
@@ -381,13 +408,16 @@ class _SettingsPageState extends State<SettingsPage> {
           ? mobilePushPrefs['system_notification'] == true
           : _systemNotification;
       _enableServerFcmPush = notification['enable_fcm_notifications'] == true;
-      _enableServerGetuiPush = notification['enable_getui_notifications'] == true;
+      _enableServerJPushPush =
+          notification['enable_jpush_notifications'] == true;
       final priority = (notification['mobile_push_priority'] ?? 'fcm_first')
           .toString()
           .trim()
           .toLowerCase();
       _mobilePushPriority =
-          (priority == 'getui_first') ? 'getui_first' : 'fcm_first';
+          (priority == 'jpush_first' || priority == 'getui_first')
+              ? 'jpush_first'
+              : 'fcm_first';
       _serverFcmReminder = notification['fcm_push_reminder'] != false;
       _serverFcmTask = notification['fcm_push_task'] != false;
       _serverFcmSystem = notification['fcm_push_system'] != false;
@@ -402,8 +432,10 @@ class _SettingsPageState extends State<SettingsPage> {
           (notification['fcm_push_start_time'] ?? '08:00').toString();
       _serverFcmEndController.text =
           (notification['fcm_push_end_time'] ?? '22:00').toString();
-      _getuiClientId =
-          (notification['mobile_getui_client_id'] ?? '').toString();
+      _jpushRegistrationId = (notification['mobile_jpush_registration_id'] ??
+              notification['mobile_getui_client_id'] ??
+              '')
+          .toString();
 
       final email = (cfg['email'] is Map)
           ? Map<String, dynamic>.from(cfg['email'] as Map)
@@ -456,9 +488,7 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('加载高级设置失败: $e')),
       );
-    } finally {
-      if (mounted) setState(() => _loadingAdvanced = false);
-    }
+    } finally {}
   }
 
   Future<void> _loadNotionData() async {
@@ -617,6 +647,150 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(SnackBar(content: Text(successText)));
+  }
+
+  String _shortError(String? raw) {
+    final msg = (raw ?? '').trim();
+    if (msg.isEmpty) return '';
+    return msg.length > 80 ? '${msg.substring(0, 80)}...' : msg;
+  }
+
+  Future<void> _loadSubscribeKey({bool silent = false}) async {
+    if (!silent && mounted) {
+      setState(() => _loadingSubscribe = true);
+    }
+    try {
+      _subscribeKey = await _eventsRepo.fetchSubscribeKey();
+    } catch (e) {
+      if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('加载订阅信息失败: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingSubscribe = false);
+    }
+  }
+
+  String get _icalUrl => _eventsRepo.buildIcalExportUrl(
+        days: _subscribeDays,
+        importance: _subscribeImportance,
+      );
+
+  String get _subscribeUrl => (_subscribeKey == null || _subscribeKey!.isEmpty)
+      ? ''
+      : _eventsRepo.buildSubscribeUrl(
+          subscribeKey: _subscribeKey!,
+          days: _subscribeDays,
+          importance: _subscribeImportance,
+        );
+
+  void _appendStreamLog(String text) {
+    final ts = DateTime.now();
+    final line =
+        '[${ts.hour.toString().padLeft(2, '0')}:${ts.minute.toString().padLeft(2, '0')}:${ts.second.toString().padLeft(2, '0')}] $text';
+    if (!mounted) return;
+    setState(() {
+      _streamLogs = [..._streamLogs, line];
+      if (_streamLogs.length > 200) {
+        _streamLogs = _streamLogs.sublist(_streamLogs.length - 200);
+      }
+    });
+  }
+
+  Future<void> _refreshStreamStatus({bool silent = false}) async {
+    try {
+      final status = await _emailsRepo.fetchStreamStatus();
+      final running = status['running'] == true;
+      final params = (status['params'] is Map)
+          ? Map<String, dynamic>.from(status['params'] as Map)
+          : {};
+      final lastEvent = (status['last_event'] is Map)
+          ? Map<String, dynamic>.from(status['last_event'] as Map)
+          : <String, dynamic>{};
+      if (!mounted) return;
+      setState(() {
+        _streamRunning = running;
+        final maxCount = params['max_count'];
+        if (maxCount is num) {
+          _streamMaxCount = maxCount.toInt();
+          _streamMaxCountController.text = _streamMaxCount.toString();
+        }
+      });
+      final msg = (lastEvent['message'] ?? '').toString().trim();
+      final st = (lastEvent['status'] ?? '').toString().trim();
+      if (!silent && msg.isNotEmpty) {
+        _appendStreamLog('${st.isNotEmpty ? '[$st] ' : ''}$msg');
+      }
+    } catch (e) {
+      if (!silent && mounted) {
+        _appendStreamLog('获取流式状态失败: $e');
+      }
+    }
+  }
+
+  Future<void> _startStream() async {
+    if (_streamConnecting) return;
+    setState(() => _streamConnecting = true);
+    _appendStreamLog('开始连接流式处理...');
+    _streamCancelToken?.cancel('restart');
+    final token = CancelToken();
+    _streamCancelToken = token;
+    unawaited(
+      _emailsRepo.connectStream(
+        start: true,
+        maxCount: _streamMaxCount > 0 ? _streamMaxCount : null,
+        cancelToken: token,
+        onEvent: (ev) {
+          final st = (ev['status'] ?? '').toString();
+          if (st == 'keepalive') return;
+          final msg = (ev['message'] ?? '').toString();
+          _appendStreamLog('${st.isNotEmpty ? '[$st] ' : ''}$msg');
+          if (st == 'completed' ||
+              st == 'cancelled' ||
+              (st == 'error' && ev['fatal'] == true)) {
+            if (mounted) {
+              setState(() {
+                _streamRunning = false;
+                _streamConnecting = false;
+              });
+            }
+          } else if (mounted) {
+            setState(() => _streamRunning = true);
+          }
+        },
+        onError: (err) {
+          if (!mounted) return;
+          _appendStreamLog('流式连接异常: $err');
+          setState(() {
+            _streamConnecting = false;
+            _streamRunning = false;
+          });
+        },
+        onDone: () {
+          if (!mounted) return;
+          setState(() => _streamConnecting = false);
+        },
+      ),
+    );
+  }
+
+  Future<void> _stopStream() async {
+    try {
+      await _emailsRepo.stopStream();
+      _streamCancelToken?.cancel('stop');
+      _streamCancelToken = null;
+      await _refreshStreamStatus();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已发送终止流式任务请求')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('终止流式任务失败: $e')),
+      );
+    }
   }
 
   Future<void> _saveConfigSectionWithConflict({
@@ -1621,8 +1795,239 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  Widget _calendarExportSection() {
+    return ListView(
+      children: [
+        Card(
+          margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('日历导出与订阅',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        value: _subscribeDays,
+                        decoration: const InputDecoration(
+                          labelText: '导出/订阅时间范围',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 30, child: Text('未来30天')),
+                          DropdownMenuItem(value: 90, child: Text('未来90天')),
+                          DropdownMenuItem(value: 365, child: Text('未来一年')),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => _subscribeDays = v ?? 365),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _subscribeImportance,
+                        decoration: const InputDecoration(
+                          labelText: '重要性筛选',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: '', child: Text('全部')),
+                          DropdownMenuItem(
+                              value: 'important', child: Text('仅重要')),
+                          DropdownMenuItem(value: 'normal', child: Text('仅普通')),
+                          DropdownMenuItem(
+                              value: 'unimportant', child: Text('仅不重要')),
+                        ],
+                        onChanged: (v) =>
+                            setState(() => _subscribeImportance = v ?? ''),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                const Text('iCal 导出链接',
+                    style: TextStyle(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 4),
+                SelectableText(
+                  _icalUrl,
+                  style: const TextStyle(fontSize: 12),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.tonal(
+                    onPressed: () => _copyText(_icalUrl, 'iCal 链接已复制'),
+                    child: const Text('复制导出链接'),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text('订阅链接',
+                        style: TextStyle(fontWeight: FontWeight.w500)),
+                    const SizedBox(width: 8),
+                    if (_loadingSubscribe)
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    else
+                      TextButton(
+                        onPressed: _loadSubscribeKey,
+                        child: const Text('刷新key'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  _subscribeUrl.isEmpty ? '订阅key未就绪' : _subscribeUrl,
+                  style: const TextStyle(fontSize: 12),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.tonal(
+                    onPressed: _subscribeUrl.isEmpty
+                        ? null
+                        : () => _copyText(_subscribeUrl, '订阅链接已复制'),
+                    child: const Text('复制订阅链接'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _mailStreamSection() {
+    final statusText =
+        _streamConnecting ? '连接中' : (_streamRunning ? '运行中' : '未运行');
+    final statusColor = _streamConnecting
+        ? Colors.orange
+        : (_streamRunning ? Colors.green : Colors.grey);
+    return ListView(
+      children: [
+        Card(
+          margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text('流式处理邮件',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
+                    Chip(
+                      label: Text(statusText),
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: statusColor.withOpacity(0.12),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      tooltip: '刷新状态',
+                      onPressed: () => _refreshStreamStatus(),
+                      icon: const Icon(Icons.refresh),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: '前 N 封（0=不限）',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                        controller: _streamMaxCountController,
+                        onChanged: (v) =>
+                            _streamMaxCount = int.tryParse(v.trim()) ?? 0,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: _streamConnecting ? null : _startStream,
+                      child: const Text('开始'),
+                    ),
+                    const SizedBox(width: 8),
+                    FilledButton.tonal(
+                      onPressed: (!_streamRunning && !_streamConnecting)
+                          ? null
+                          : _stopStream,
+                      child: const Text('终止'),
+                    ),
+                  ],
+                ),
+                // 日志区默认折叠，减少视觉占用
+                Theme(
+                  data: Theme.of(context)
+                      .copyWith(dividerColor: Colors.transparent),
+                  child: ExpansionTile(
+                    initiallyExpanded: false,
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.zero,
+                    title: Row(
+                      children: [
+                        const Text('处理日志',
+                            style: TextStyle(
+                                fontSize: 13, fontWeight: FontWeight.w500)),
+                        const SizedBox(width: 6),
+                        if (_streamLogs.isNotEmpty)
+                          Text(
+                            '(${_streamLogs.length} 条)',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
+                          ),
+                      ],
+                    ),
+                    children: [
+                      const SizedBox(height: 6),
+                      Container(
+                        width: double.infinity,
+                        constraints: const BoxConstraints(
+                            minHeight: 60, maxHeight: 200),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: _streamLogs.isEmpty
+                            ? const Text('暂无日志',
+                                style: TextStyle(color: Colors.grey))
+                            : ListView(
+                                children: _streamLogs.reversed
+                                    .map((l) => Text(l,
+                                        style:
+                                            const TextStyle(fontSize: 12)))
+                                    .toList(),
+                              ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   void dispose() {
+    _streamStatusTimer?.cancel();
+    _streamCancelToken?.cancel('dispose');
     for (final c in _keywordInput.values) {
       c.dispose();
     }
@@ -1653,6 +2058,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _aiBaseUrlController.dispose();
     _aiMaxTokensController.dispose();
     _aiTemperatureController.dispose();
+    _streamMaxCountController.dispose();
     super.dispose();
   }
 
@@ -1785,11 +2191,11 @@ class _SettingsPageState extends State<SettingsPage> {
                           onChanged(() => _enableServerFcmPush = v),
                     ),
                     SwitchListTile(
-                      title: const Text('开启服务端主动推送（Getui）'),
-                      subtitle: const Text('国内网络可优先走 Getui 通道'),
-                      value: _enableServerGetuiPush,
+                      title: const Text('开启服务端主动推送（JPush）'),
+                      subtitle: const Text('国内网络可优先走 JPush 通道'),
+                      value: _enableServerJPushPush,
                       onChanged: (v) =>
-                          onChanged(() => _enableServerGetuiPush = v),
+                          onChanged(() => _enableServerJPushPush = v),
                     ),
                     Padding(
                       padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
@@ -1800,8 +2206,8 @@ class _SettingsPageState extends State<SettingsPage> {
                             label: Text('FCM优先'),
                           ),
                           ButtonSegment<String>(
-                            value: 'getui_first',
-                            label: Text('Getui优先'),
+                            value: 'jpush_first',
+                            label: Text('JPush优先'),
                           ),
                         ],
                         selected: {_mobilePushPriority},
@@ -1888,9 +2294,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
                       child: FilledButton.tonal(
                         onPressed: (_savingNotificationPrefs ||
-                                ((_mobilePushPriority == 'getui_first'
-                                        ? (_getuiClientId ?? '').isEmpty
-                                        : (_fcmToken ?? '').isEmpty)))
+                                ((_mobilePushPriority == 'jpush_first'
+                                    ? (_jpushRegistrationId ?? '').isEmpty
+                                    : (_fcmToken ?? '').isEmpty)))
                             ? null
                             : _sendFcmTestPush,
                         child: const Text('发送一次推送测试'),
@@ -1925,25 +2331,39 @@ class _SettingsPageState extends State<SettingsPage> {
                             ? 'FCM Token 已就绪（可用于远程推送）'
                             : (NotificationService.instance.firebaseReady
                                 ? 'FCM 已初始化，但 Token 暂不可用'
-                                : '未就绪（请确认已放置 google-services.json）'),
+                                : (() {
+                                    final err = _shortError(NotificationService
+                                        .instance.firebaseInitError);
+                                    if (err.isNotEmpty) {
+                                      return '未就绪：$err';
+                                    }
+                                    return '未就绪（请确认已放置 google-services.json）';
+                                  })()),
                       ),
                     ),
                     ListTile(
                       leading: Icon(
-                        (_getuiClientId ?? '').isNotEmpty
+                        (_jpushRegistrationId ?? '').isNotEmpty
                             ? Icons.cloud_done_outlined
                             : Icons.cloud_off_outlined,
-                        color: (_getuiClientId ?? '').isNotEmpty
+                        color: (_jpushRegistrationId ?? '').isNotEmpty
                             ? Colors.green
                             : Colors.orange,
                       ),
-                      title: const Text('Getui 推送通道'),
+                      title: const Text('JPush 推送通道'),
                       subtitle: Text(
-                        (_getuiClientId ?? '').isNotEmpty
-                            ? 'Getui ClientID 已就绪（可用于远程推送）'
-                            : (NotificationService.instance.getuiReady
-                                ? 'Getui 已初始化，但 ClientID 暂不可用'
-                                : '未就绪（请确认 Android Getui 配置已完成）'),
+                        (_jpushRegistrationId ?? '').isNotEmpty
+                            ? 'JPush RegistrationID 已就绪（可用于远程推送）'
+                            : (NotificationService.instance.jpushReady
+                                ? 'JPush 已初始化，但 RegistrationID 暂不可用'
+                                : (() {
+                                    final err = _shortError(NotificationService
+                                        .instance.jpushInitError);
+                                    if (err.isNotEmpty) {
+                                      return '未就绪：$err';
+                                    }
+                                    return '未就绪（请确认 Android JPush 配置已完成）';
+                                  })()),
                       ),
                     ),
                     if ((_fcmToken ?? '').isNotEmpty)
@@ -1954,11 +2374,11 @@ class _SettingsPageState extends State<SettingsPage> {
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
-                    if ((_getuiClientId ?? '').isNotEmpty)
+                    if ((_jpushRegistrationId ?? '').isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: SelectableText(
-                          _getuiClientId!,
+                          _jpushRegistrationId!,
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ),
@@ -2039,27 +2459,27 @@ class _SettingsPageState extends State<SettingsPage> {
                         children: [
                           Expanded(
                             child: OutlinedButton(
-                              onPressed: _loadingGetuiClientId
+                              onPressed: _loadingJPushRegistrationId
                                   ? null
-                                  : _refreshGetuiClientId,
-                              child: _loadingGetuiClientId
+                                  : _refreshJPushRegistrationId,
+                              child: _loadingJPushRegistrationId
                                   ? const SizedBox(
                                       width: 14,
                                       height: 14,
                                       child: CircularProgressIndicator(
                                           strokeWidth: 2),
                                     )
-                                  : const Text('刷新 Getui CID'),
+                                  : const Text('刷新 JPush ID'),
                             ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: OutlinedButton(
-                              onPressed: (_getuiClientId ?? '').isEmpty
+                              onPressed: (_jpushRegistrationId ?? '').isEmpty
                                   ? null
-                                  : () => _copyText(
-                                      _getuiClientId!, 'Getui ClientID 已复制'),
-                              child: const Text('复制 Getui CID'),
+                                  : () => _copyText(_jpushRegistrationId!,
+                                      'JPush RegistrationID 已复制'),
+                              child: const Text('复制 JPush ID'),
                             ),
                           ),
                         ],
@@ -2192,45 +2612,227 @@ class _SettingsPageState extends State<SettingsPage> {
           onTap: openNotificationSection,
         ),
         sectionEntry(
+          icon: Icons.calendar_month_outlined,
+          title: '日历导出与订阅',
+          subtitle: '复制 iCal 导出与订阅链接',
+          onTap: () {
+            // 使用 StatefulBuilder 管理链接显示/隐藏状态
+            bool icalVisible = false;
+            bool subVisible = false;
+            Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => StatefulBuilder(
+                builder: (ctx, setLocal) => Scaffold(
+                  appBar: AppBar(title: const Text('日历导出与订阅')),
+                  body: ListView(
+                    children: [
+                      Card(
+                        margin: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text('日历导出与订阅',
+                                  style: TextStyle(fontWeight: FontWeight.w600)),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: DropdownButtonFormField<int>(
+                                      value: _subscribeDays,
+                                      decoration: const InputDecoration(
+                                        labelText: '导出/订阅时间范围',
+                                        isDense: true,
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      items: const [
+                                        DropdownMenuItem(
+                                            value: 30, child: Text('未来30天')),
+                                        DropdownMenuItem(
+                                            value: 90, child: Text('未来90天')),
+                                        DropdownMenuItem(
+                                            value: 365, child: Text('未来一年')),
+                                      ],
+                                      onChanged: (v) {
+                                        setState(() =>
+                                            _subscribeDays = v ?? 365);
+                                        setLocal(() {});
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: DropdownButtonFormField<String>(
+                                      value: _subscribeImportance,
+                                      decoration: const InputDecoration(
+                                        labelText: '重要性筛选',
+                                        isDense: true,
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      items: const [
+                                        DropdownMenuItem(
+                                            value: '', child: Text('全部')),
+                                        DropdownMenuItem(
+                                            value: 'important',
+                                            child: Text('仅重要')),
+                                        DropdownMenuItem(
+                                            value: 'normal',
+                                            child: Text('仅普通')),
+                                        DropdownMenuItem(
+                                            value: 'unimportant',
+                                            child: Text('仅不重要')),
+                                      ],
+                                      onChanged: (v) {
+                                        setState(() =>
+                                            _subscribeImportance = v ?? '');
+                                        setLocal(() {});
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              // ── iCal 导出链接 ──────────────────────────
+                              Row(
+                                children: [
+                                  const Text('iCal 导出链接',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w500)),
+                                  const Spacer(),
+                                  IconButton(
+                                    icon: Icon(icalVisible
+                                        ? Icons.visibility
+                                        : Icons.visibility_off_outlined),
+                                    iconSize: 20,
+                                    tooltip: icalVisible ? '隐藏链接' : '显示链接',
+                                    onPressed: () =>
+                                        setLocal(() => icalVisible = !icalVisible),
+                                  ),
+                                ],
+                              ),
+                              if (icalVisible) ...[
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  _icalUrl,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ],
+                              const SizedBox(height: 4),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: FilledButton.tonal(
+                                  onPressed: () =>
+                                      _copyText(_icalUrl, 'iCal 链接已复制'),
+                                  child: const Text('复制导出链接'),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              // ── 订阅链接 ───────────────────────────────
+                              Row(
+                                children: [
+                                  const Text('订阅链接',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w500)),
+                                  const SizedBox(width: 8),
+                                  if (_loadingSubscribe)
+                                    const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(
+                                            strokeWidth: 2))
+                                  else
+                                    TextButton(
+                                        onPressed: _loadSubscribeKey,
+                                        child: const Text('刷新key')),
+                                  const Spacer(),
+                                  IconButton(
+                                    icon: Icon(subVisible
+                                        ? Icons.visibility
+                                        : Icons.visibility_off_outlined),
+                                    iconSize: 20,
+                                    tooltip: subVisible ? '隐藏链接' : '显示链接',
+                                    onPressed: () =>
+                                        setLocal(() => subVisible = !subVisible),
+                                  ),
+                                ],
+                              ),
+                              if (subVisible) ...[
+                                const SizedBox(height: 4),
+                                SelectableText(
+                                  _subscribeUrl.isEmpty
+                                      ? '订阅key未就绪'
+                                      : _subscribeUrl,
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                              ],
+                              const SizedBox(height: 4),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: FilledButton.tonal(
+                                  onPressed: _subscribeUrl.isEmpty
+                                      ? null
+                                      : () => _copyText(
+                                          _subscribeUrl, '订阅链接已复制'),
+                                  child: const Text('复制订阅链接'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ));
+          },
+        ),
+        sectionEntry(
+          icon: Icons.sync_outlined,
+          title: '邮件流式获取',
+          subtitle: '启动/终止流式抓取并查看日志',
+          onTap: () => openSection('邮件流式获取', _mailStreamSection()),
+        ),
+        sectionEntry(
           icon: Icons.mail_outline,
           title: '邮箱设置',
           subtitle: '邮箱账号、IMAP、抓取策略',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: openEmailSection,
         ),
         sectionEntry(
           icon: Icons.psychology_outlined,
           title: 'AI 设置',
           subtitle: '模型、密钥、分析开关',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: openAiSection,
         ),
         sectionEntry(
           icon: Icons.key_outlined,
           title: '关键词管理',
           subtitle: '重要/普通/不重要关键词',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: openKeywordSection,
         ),
         sectionEntry(
           icon: Icons.merge_type_outlined,
           title: '去重 Beta 设置',
           subtitle: '时间窗口、阈值与权重',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: openDedupSection,
         ),
         sectionEntry(
           icon: Icons.label_outline,
           title: '标签订阅与历史',
           subtitle: '订阅规则、候选标签、手工标签',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: openTagSection,
         ),
         sectionEntry(
           icon: Icons.notes_outlined,
           title: 'Notion 归档',
           subtitle: '查看归档与搜索',
-          loading: _loadingAdvanced,
+          loading: false,
           onTap: () =>
               openSection('Notion 归档', ListView(children: [_notionSection()])),
         ),

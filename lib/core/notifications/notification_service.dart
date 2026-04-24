@@ -1,8 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:getui_flutter/getui_flutter.dart';
+import 'package:jpush_flutter/jpush_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -34,16 +36,33 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   bool _initialized = false;
+  Future<void>? _initFuture;
+  bool _firebaseInitStarted = false;
+  bool _jpushInitStarted = false;
+  bool _jpushHandlerBound = false;
   bool _firebaseReady = false;
-  bool _getuiReady = false;
+  bool _jpushReady = false;
+  String? _firebaseInitError;
+  String? _jpushInitError;
   String? _fcmToken;
-  String? _getuiClientId;
+  String? _jpushRegistrationId;
   Map<String, dynamic>? _lastOpenedMessageData;
   int _notificationId = 1000;
-  final GetuiFlutter _getui = GetuiFlutter();
+  final JPush _jpush = JPush();
 
   Future<void> init() async {
     if (_initialized) return;
+    if (_initFuture != null) return _initFuture!;
+    _initFuture = _initCore();
+    await _initFuture!;
+    _initialized = true;
+    _initFuture = null;
+    // Push SDK initialization should never block app startup.
+    unawaited(_ensureFirebaseReady());
+    unawaited(_ensureJPushReady());
+  }
+
+  Future<void> _initCore() async {
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings(
       requestAlertPermission: false,
@@ -55,19 +74,52 @@ class NotificationService {
       iOS: iosInit,
       macOS: iosInit,
     );
-    await _plugin.initialize(initSettings);
-    await _createChannels();
-    await requestPermissionIfNeeded();
-    await _initFirebaseMessaging();
-    await _initGetuiPush();
-    _initialized = true;
+    try {
+      await _plugin.initialize(initSettings);
+      await _createChannels();
+    } catch (_) {
+      // Keep app usable even when local notification plugin init fails.
+    }
+    try {
+      await requestPermissionIfNeeded().timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Ignore permission timeout/failures here; can be retried from settings page.
+    }
   }
 
   bool get firebaseReady => _firebaseReady;
-  bool get getuiReady => _getuiReady;
+  bool get jpushReady => _jpushReady;
+  String? get firebaseInitError => _firebaseInitError;
+  String? get jpushInitError => _jpushInitError;
   String? get cachedFcmToken => _fcmToken;
-  String? get cachedGetuiClientId => _getuiClientId;
+  String? get cachedJPushRegistrationId => _jpushRegistrationId;
   Map<String, dynamic>? get lastOpenedMessageData => _lastOpenedMessageData;
+
+  Future<void> _ensureFirebaseReady() async {
+    if (_firebaseReady || _firebaseInitStarted) return;
+    _firebaseInitStarted = true;
+    try {
+      await _initFirebaseMessaging().timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      _firebaseReady = false;
+      _firebaseInitError = 'FCM 初始化超时';
+    } finally {
+      _firebaseInitStarted = false;
+    }
+  }
+
+  Future<void> _ensureJPushReady() async {
+    if (_jpushReady || _jpushInitStarted) return;
+    _jpushInitStarted = true;
+    try {
+      await _initJPush().timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      _jpushReady = false;
+      _jpushInitError = 'JPush 初始化超时';
+    } finally {
+      _jpushInitStarted = false;
+    }
+  }
 
   Future<void> _initFirebaseMessaging() async {
     if (kIsWeb) return;
@@ -114,50 +166,49 @@ class NotificationService {
         );
       });
       _firebaseReady = true;
+      _firebaseInitError = null;
     } catch (_) {
       // Missing Firebase config (google-services.json/GoogleService-Info.plist) or init errors.
       _firebaseReady = false;
+      _firebaseInitError = _.toString();
     }
   }
 
-  Future<void> _initGetuiPush() async {
+  Future<void> _initJPush() async {
     if (kIsWeb) return;
     if (defaultTargetPlatform != TargetPlatform.android &&
         defaultTargetPlatform != TargetPlatform.iOS) {
       return;
     }
     try {
-      _getui.addEventHandler(
-        onReceiveClientId: (String cid) async {
-          _getuiClientId = cid;
-        },
-        onReceiveMessageData: (Map event) async {},
-        onNotificationMessageArrived: (Map event) async {},
-        onNotificationMessageClicked: (Map event) async {
-          _lastOpenedMessageData = Map<String, dynamic>.from(event);
-        },
-        onTransmitUserMessageReceive: (Map event) async {},
-        onRegisterDeviceToken: (String token) async {},
-        onReceivePayload: (Map event) async {},
-        onReceiveNotificationResponse: (Map event) async {},
-        onAppLinkPayload: (String payload) async {},
-        onPushModeResult: (Map event) async {},
-        onSetTagResult: (Map event) async {},
-        onAliasResult: (Map event) async {},
-        onQueryTagResult: (Map event) async {},
-        onWillPresentNotification: (Map event) async {},
-        onOpenSettingsForNotification: (Map event) async {},
-        onGrantAuthorization: (String result) async {},
-        onLiveActivityResult: (Map event) async {},
-      );
-      await GetuiFlutter.initGetuiSdk;
-      final cid = (await GetuiFlutter.getClientId).toString().trim();
-      if (cid.isNotEmpty && cid != 'null') {
-        _getuiClientId = cid;
+      if (!_jpushHandlerBound) {
+        _jpush.addEventHandler(
+          onOpenNotification: (event) async {
+            _lastOpenedMessageData = Map<String, dynamic>.from(event);
+          },
+          onReceiveNotification: (event) async {},
+          onReceiveMessage: (event) async {},
+        );
+        _jpushHandlerBound = true;
       }
-      _getuiReady = true;
+      _jpush.setup(
+        appKey: '',
+        channel: 'developer-default',
+        production: false,
+        debug: false,
+      );
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        _jpush.requestRequiredPermission();
+      }
+      final rid = (await _jpush.getRegistrationID()).toString().trim();
+      if (rid.isNotEmpty && rid != 'null') {
+        _jpushRegistrationId = rid;
+      }
+      _jpushReady = true;
+      _jpushInitError = null;
     } catch (_) {
-      _getuiReady = false;
+      _jpushReady = false;
+      _jpushInitError = _.toString();
     }
   }
 
@@ -219,30 +270,44 @@ class NotificationService {
   Future<String?> getFcmToken({bool refresh = false}) async {
     if (kIsWeb) return null;
     await init();
+    await _ensureFirebaseReady();
     if (!_firebaseReady) return null;
-    if (refresh) {
-      _fcmToken = await FirebaseMessaging.instance.getToken();
+    if (!refresh && (_fcmToken ?? '').isNotEmpty) {
       return _fcmToken;
     }
-    return _fcmToken ?? await FirebaseMessaging.instance.getToken();
+    for (var i = 0; i < 5; i++) {
+      _fcmToken = await FirebaseMessaging.instance.getToken();
+      if ((_fcmToken ?? '').isNotEmpty) {
+        return _fcmToken;
+      }
+      await Future.delayed(const Duration(seconds: 2));
+    }
+    return _fcmToken;
   }
 
-  Future<String?> getGetuiClientId({bool refresh = false}) async {
+  Future<String?> getJPushRegistrationId({bool refresh = false}) async {
     if (kIsWeb) return null;
     await init();
-    if (!_getuiReady) return null;
-    if (!refresh && (_getuiClientId ?? '').isNotEmpty) {
-      return _getuiClientId;
+    await _ensureJPushReady();
+    if (!_jpushReady) return null;
+    if (!refresh && (_jpushRegistrationId ?? '').isNotEmpty) {
+      return _jpushRegistrationId;
     }
-    try {
-      final cid = (await GetuiFlutter.getClientId).toString().trim();
-      if (cid.isNotEmpty && cid != 'null') {
-        _getuiClientId = cid;
+    for (var i = 0; i < 5; i++) {
+      try {
+        final rid = (await _jpush.getRegistrationID()).toString().trim();
+        if (rid.isNotEmpty && rid != 'null') {
+          _jpushRegistrationId = rid;
+        }
+      } catch (_) {
+        _jpushInitError ??= _.toString();
       }
-      return _getuiClientId;
-    } catch (_) {
-      return _getuiClientId;
+      if ((_jpushRegistrationId ?? '').isNotEmpty) {
+        return _jpushRegistrationId;
+      }
+      await Future.delayed(const Duration(seconds: 2));
     }
+    return _jpushRegistrationId;
   }
 
   Future<bool> openSystemNotificationSettings() async {

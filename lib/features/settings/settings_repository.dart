@@ -1,10 +1,12 @@
 import '../../core/network/api_client.dart';
+import 'dart:async';
 
 class SettingsRepository {
   final ApiClient _client = ApiClient.instance;
+  static const Duration _settingsTimeout = Duration(seconds: 15);
 
   Future<Map<String, dynamic>> fetchConfig() async {
-    final res = await _client.get('/api/config');
+    final res = await _client.get('/api/config').timeout(_settingsTimeout);
     final body = res.data;
     if (body is! Map<String, dynamic>) {
       throw Exception('配置响应格式异常');
@@ -44,7 +46,7 @@ class SettingsRepository {
         ...serverNotification,
         'mobile_push_prefs': mobilePushPrefs,
       },
-    });
+    }).timeout(_settingsTimeout);
     final body = res.data;
     if (res.statusCode == 409 && body is Map<String, dynamic>) {
       return {
@@ -72,7 +74,7 @@ class SettingsRepository {
       '_base_revision': baseRevision,
       if (force) '_force': true,
       section: payload,
-    });
+    }).timeout(_settingsTimeout);
     final body = res.data;
     if (res.statusCode == 409 && body is Map<String, dynamic>) {
       return {
@@ -97,20 +99,20 @@ class SettingsRepository {
     final res = await _client.post('/api/mobile/fcm-token', data: {
       'token': token,
       'platform': platform,
-    });
+    }).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '上传FCM Token失败');
   }
 
-  Future<void> uploadGetuiClientId({
-    required String clientId,
+  Future<void> uploadJPushRegistrationId({
+    required String registrationId,
     String platform = 'android',
   }) async {
     final res = await _client.post('/api/mobile/push-token', data: {
-      'provider': 'getui',
-      'token': clientId,
+      'provider': 'jpush',
+      'token': registrationId,
       'platform': platform,
-    });
-    _ensureSuccess(res.data, '上传Getui ClientID失败');
+    }).timeout(_settingsTimeout);
+    _ensureSuccess(res.data, '上传JPush RegistrationID失败');
   }
 
   Future<void> testFcmPush({
@@ -128,23 +130,24 @@ class SettingsRepository {
     final res = await _client.post('/api/notifications/test', data: {
       'channel': channel,
       'config': {'title': title, 'body': body},
-    });
+    }).timeout(const Duration(seconds: 35));
     _ensureSuccess(res.data, '测试推送失败');
   }
 
   Future<void> saveKeywords(Map<String, dynamic> keywords) async {
-    final res = await _client.post('/api/config', data: {'keywords': keywords});
+    final res = await _client.post('/api/config',
+        data: {'keywords': keywords}).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '保存关键词失败');
   }
 
   Future<void> saveDedupBeta(Map<String, dynamic> dedupBeta) async {
-    final res =
-        await _client.post('/api/config', data: {'dedup_beta': dedupBeta});
+    final res = await _client.post('/api/config',
+        data: {'dedup_beta': dedupBeta}).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '保存去重配置失败');
   }
 
   Future<Map<String, dynamic>> fetchTagSettings() async {
-    final res = await _client.get('/api/tags');
+    final res = await _client.get('/api/tags').timeout(_settingsTimeout);
     final body = _asMap(res.data);
     _ensureSuccess(body, '加载标签配置失败');
     return body;
@@ -161,7 +164,7 @@ class SettingsRepository {
       if (force) '_force': true,
       'subscriptions': subscriptions,
       'history_retention_days': historyRetentionDays,
-    });
+    }).timeout(_settingsTimeout);
     if (res.statusCode == 409 && res.data is Map<String, dynamic>) {
       final body = Map<String, dynamic>.from(res.data as Map);
       throw Exception('CONFLICT:${body['error'] ?? '标签配置冲突'}');
@@ -172,36 +175,39 @@ class SettingsRepository {
   Future<void> subscribeTag({
     required int level,
     required String value,
-    bool applyNow = true,
+    bool applyNow = false,
   }) async {
     final res = await _client.post('/api/tags/subscribe', data: {
       'level': level,
       'value': value,
       'apply_now': applyNow,
-    });
+    }).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '订阅标签失败');
   }
 
   Future<void> unsubscribeTag({
     required int level,
     required String value,
-    bool applyNow = true,
+    bool applyNow = false,
   }) async {
     final res = await _client.post('/api/tags/unsubscribe', data: {
       'level': level,
       'value': value,
       'apply_now': applyNow,
-    });
+    }).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '取消订阅失败');
   }
 
   Future<void> reapplySubscriptions() async {
-    final res = await _client.post('/api/tags/reapply-subscriptions', data: {});
+    final res = await _client.post('/api/tags/reapply-subscriptions',
+        data: {}).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '重应用订阅失败');
   }
 
   Future<Map<String, dynamic>> fetchHistoryCandidates() async {
-    final res = await _client.get('/api/tags/history-candidates');
+    final res = await _client
+        .get('/api/tags/history-candidates')
+        .timeout(_settingsTimeout);
     final body = _asMap(res.data);
     _ensureSuccess(body, '加载历史候选失败');
     return body;
@@ -215,7 +221,7 @@ class SettingsRepository {
         await _client.post('/api/tags/history-candidates/add-manual', data: {
       'level': level,
       'value': value,
-    });
+    }).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '添加手工历史标签失败');
   }
 
@@ -229,14 +235,14 @@ class SettingsRepository {
       'level': level,
       'value': value,
       'manual': manual,
-    });
+    }).timeout(_settingsTimeout);
     _ensureSuccess(res.data, '删除历史候选失败');
   }
 
   Future<List<Map<String, dynamic>>> fetchNotionArchived(
       {int limit = 30}) async {
-    final res =
-        await _client.get('/api/notion/archived', query: {'limit': limit});
+    final res = await _client.get('/api/notion/archived',
+        query: {'limit': limit}).timeout(_settingsTimeout);
     final body = _asMap(res.data);
     _ensureSuccess(body, '加载Notion归档失败');
     final list = body['emails'];
@@ -251,8 +257,8 @@ class SettingsRepository {
     required String query,
     int limit = 10,
   }) async {
-    final res = await _client
-        .get('/api/notion/search', query: {'q': query, 'limit': limit});
+    final res = await _client.get('/api/notion/search',
+        query: {'q': query, 'limit': limit}).timeout(_settingsTimeout);
     final body = _asMap(res.data);
     _ensureSuccess(body, '搜索Notion失败');
     final list = body['results'];

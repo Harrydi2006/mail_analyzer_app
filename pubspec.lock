@@ -272,14 +272,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  getui_flutter:
-    dependency: "direct main"
-    description:
-      name: getui_flutter
-      sha256: "29057b0198e820a4a13f5bed9610f8865716ca0b14d0f51e4d43db4bbb7ad83f"
-      url: "https://pub.flutter-io.cn"
-    source: hosted
-    version: "1.0.0"
   glob:
     dependency: transitive
     description:
@@ -328,6 +320,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "1.0.1"
+  jpush_flutter:
+    dependency: "direct main"
+    description:
+      name: jpush_flutter
+      sha256: cde73b8a2fb4db46f202dcd3ad1f64a6bc308db2049020f8ea59bd82dc08b10f
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "2.6.0"
   js:
     dependency: transitive
     description:

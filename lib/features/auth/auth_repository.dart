@@ -19,6 +19,7 @@ class AuthRepository {
         data: {
           'username': username,
           'password': password,
+          'remember_me': true,
         },
       );
 
@@ -58,12 +59,16 @@ class AuthRepository {
       final res = await _client.get('/api/auth/check');
       final body = res.data;
       if (body is! Map<String, dynamic>) return false;
-      final cookieBundle = _extractCookieBundle(res);
-      final csrfToken =
-          body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
-      final setCookie = cookieBundle['cookieHeader'];
-      await _client.saveSession(csrfToken: csrfToken, setCookie: setCookie);
-      return body['success'] == true && body['authenticated'] == true;
+      final authenticated = body['success'] == true && body['authenticated'] == true;
+      if (authenticated) {
+        // 服务端每次 /check 都会滚动刷新 session，客户端同步持久化最新 cookie
+        final cookieBundle = _extractCookieBundle(res);
+        final csrfToken =
+            body['csrf_token']?.toString() ?? cookieBundle['csrfToken'];
+        final setCookie = cookieBundle['cookieHeader'];
+        await _client.saveSession(csrfToken: csrfToken, setCookie: setCookie);
+      }
+      return authenticated;
     } on DioException {
       // 网络抖动时，如果本地仍有会话，允许保持登录态并交给后续请求校验。
       return await _client.hasLocalSession();

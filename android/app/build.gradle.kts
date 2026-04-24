@@ -50,9 +50,8 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["PUSH_APPID"] = secretProp("GETUI_APP_ID")
-        manifestPlaceholders["PUSH_APPKEY"] = secretProp("GETUI_APP_KEY")
-        manifestPlaceholders["PUSH_APPSECRET"] = secretProp("GETUI_APP_SECRET")
+        manifestPlaceholders["JPUSH_APPKEY"] = secretProp("JPUSH_APPKEY")
+        manifestPlaceholders["JPUSH_CHANNEL"] = secretProp("JPUSH_CHANNEL")
     }
 
     buildTypes {
@@ -76,6 +75,4 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-    implementation("com.getui:gtsdk:3.3.13.0")
-    implementation("com.getui:gtc:3.1.10.0")
 }

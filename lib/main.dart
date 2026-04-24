@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -19,6 +21,13 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  await NotificationService.instance.init();
   runApp(const MailAnalyzerApp());
+  unawaited(
+    NotificationService.instance
+        .init()
+        .timeout(const Duration(seconds: 12))
+        .catchError((Object error, StackTrace stackTrace) {
+      debugPrint('Notification init failed: $error');
+    }),
+  );
 }
